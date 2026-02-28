@@ -1,5 +1,10 @@
-const { getTaskContext, listTasks, assignTask, updateTaskStatus } = require("../../core/tasks");
+const { getTaskContext, listTasks, assignTask, updateTaskStatus, notifyTaskDone } = require("../../core/tasks");
 const { printOutput } = require("../../utils/output");
+
+function collectRepeatedValues(value, previous = []) {
+  previous.push(value);
+  return previous;
+}
 
 function registerTaskCommands(program) {
   const task = program.command("task").description("Manage agent tasks");
@@ -9,6 +14,9 @@ function registerTaskCommands(program) {
     .description("Get the current task for an agent")
     .option("--agent <id>", "Agent id")
     .option("--session <id>", "Session id")
+    .option("--wait", "Wait until task dependencies are satisfied")
+    .option("--no-wait", "Return immediately even if task dependencies are still blocked")
+    .option("--poll-interval-ms <ms>", "Polling interval while waiting", String(1500))
     .option("--json", "Return JSON output", false)
     .action(async (options) => {
       const payload = await getTaskContext(process.cwd(), options);
@@ -22,8 +30,16 @@ function registerTaskCommands(program) {
           `Goal: ${result.agent.goal}`,
           `Task: ${result.task.title}`,
           `Status: ${result.task.status}`,
+          `Wait state: ${result.task.waitState}`,
           `Details: ${result.task.description}`,
         ];
+
+        if (result.task.blockingTasks && result.task.blockingTasks.length) {
+          lines.push("Blocking dependencies:");
+          for (const dependency of result.task.blockingTasks) {
+            lines.push(`- ${dependency.dependsOnTaskId} [${dependency.dependsOnTaskStatus}] ${dependency.dependsOnTaskTitle}`);
+          }
+        }
 
         if (result.task.availableAgents && result.task.availableAgents.length) {
           lines.push("Available agents:");
@@ -64,6 +80,7 @@ function registerTaskCommands(program) {
     .option("--status <status>", "Initial task status", "todo")
     .option("--priority <priority>", "Task priority", "medium")
     .option("--type <type>", "Task type", "other")
+    .option("--depends-on <taskId>", "Create a blocking dependency on another task", collectRepeatedValues, [])
     .option("--json", "Return JSON output", false)
     .action(async (options) => {
       const assignedTask = await assignTask(process.cwd(), options);
@@ -87,6 +104,32 @@ function registerTaskCommands(program) {
       const updatedTask = await updateTaskStatus(process.cwd(), options);
       printOutput(options, { status: "ok", task: updatedTask }, (payload) => {
         return `${payload.task.id} -> ${payload.task.status}`;
+      });
+    });
+
+  task
+    .command("notify-done")
+    .description("Mark a task ready for validation and wait for finalization")
+    .requiredOption("--task <id>", "Task id")
+    .option("--agent <id>", "Agent id performing the update")
+    .option("--session <id>", "Session id")
+    .option("--note <text>", "Optional note")
+    .option("--result-summary <summary>", "Summary when implementation is ready")
+    .option("--poll-interval-ms <ms>", "Polling interval while waiting", String(1500))
+    .option("--json", "Return JSON output", false)
+    .action(async (options) => {
+      const result = await notifyTaskDone(process.cwd(), options);
+      printOutput(options, { status: "ok", ...result }, (payload) => {
+        if (payload.outcome === "finalized") {
+          return `${payload.task.id} finalized. You can exit: the task is complete.`;
+        }
+
+        if (payload.outcome === "changes_requested") {
+          const summary = payload.feedback.map((entry) => entry.message).join(" | ") || "Changes requested.";
+          return `${payload.task.id} needs more work: ${summary}`;
+        }
+
+        return `${payload.task.id} -> ${payload.outcome}`;
       });
     });
 }

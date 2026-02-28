@@ -7,7 +7,7 @@ const { defaultConfig } = require("../src/core/config");
 const { pathExists } = require("../src/core/state");
 const { spawnAgent, showAgent } = require("../src/core/agents");
 const { sendMessage, listMessages } = require("../src/core/messages");
-const { getTaskContext, updateTaskStatus } = require("../src/core/tasks");
+const { getTaskContext, updateTaskStatus, assignTask, notifyTaskDone } = require("../src/core/tasks");
 const { executeObjective } = require("../src/core/orchestrator");
 const { runOneshotProcess } = require("../src/core/process-manager");
 const { detectDirectGoal } = require("../src/cli");
@@ -98,27 +98,241 @@ test("task get resolves the current task from agent env", async () => {
 
   process.env.AGENTSQUAD_AGENT_ID = agent.id;
   process.env.AGENTSQUAD_SESSION_ID = "default";
+  try {
+    const context = await getTaskContext(cwd, {});
+    assert.equal(context.agent.id, agent.id);
+    assert.equal(context.task.status, "ready");
+    assert.match(context.task.description, /smoke test/i);
+    assert.equal(context.task.availableAgents.length, 1);
+    assert.equal(context.task.availableAgents[0].role, "developer");
+    assert.match(context.task.availableAgents[0].taskTitle, /note editor/i);
 
-  const context = await getTaskContext(cwd, {});
-  assert.equal(context.agent.id, agent.id);
-  assert.equal(context.task.status, "todo");
-  assert.match(context.task.description, /smoke test/i);
-  assert.equal(context.task.availableAgents.length, 1);
-  assert.equal(context.task.availableAgents[0].role, "developer");
-  assert.match(context.task.availableAgents[0].taskTitle, /note editor/i);
+    await updateTaskStatus(cwd, {
+      task: context.task.id,
+      status: "in_progress",
+      agent: agent.id,
+      session: "default",
+    });
 
+    const updated = await getTaskContext(cwd, {});
+    assert.equal(updated.task.status, "in_progress");
+  } finally {
+    delete process.env.AGENTSQUAD_AGENT_ID;
+    delete process.env.AGENTSQUAD_SESSION_ID;
+  }
+});
+
+test("task dependencies block task get until upstream work is done", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "agentsquad-"));
+  const config = defaultConfig();
+
+  const developer = await spawnAgent(cwd, config, {
+    provider: "generic",
+    session: "default",
+    workdir: cwd,
+    role: "developer",
+    goal: "Build feature 1",
+    task: "Implement feature 1",
+  });
+
+  const tester = await spawnAgent(cwd, config, {
+    provider: "generic",
+    session: "default",
+    workdir: cwd,
+    role: "tester",
+    goal: "Validate feature 1",
+  });
+
+  const developerContext = await getTaskContext(cwd, { agent: developer.id, session: "default", noWait: true });
+  const testerTask = await assignTask(cwd, {
+    session: "default",
+    agent: tester.id,
+    goal: "Validate feature 1",
+    task: "Test feature 1",
+    type: "testing",
+    dependsOn: [developerContext.task.id],
+  });
+
+  const blockedContext = await getTaskContext(cwd, { agent: tester.id, session: "default", noWait: true });
+  assert.equal(blockedContext.task.id, testerTask.id);
+  assert.equal(blockedContext.task.waitState, "waiting_for_dependencies");
+  assert.equal(blockedContext.task.blockingTasks.length, 1);
+  assert.equal(blockedContext.task.status, "waiting");
+
+  const waitPromise = getTaskContext(cwd, {
+    agent: tester.id,
+    session: "default",
+    wait: true,
+    pollIntervalMs: 10,
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 30));
   await updateTaskStatus(cwd, {
-    task: context.task.id,
-    status: "in_progress",
-    agent: agent.id,
+    task: developerContext.task.id,
+    status: "done",
+    agent: developer.id,
     session: "default",
   });
 
-  const updated = await getTaskContext(cwd, {});
-  assert.equal(updated.task.status, "in_progress");
+  const unblockedContext = await waitPromise;
+  assert.equal(unblockedContext.task.id, testerTask.id);
+  assert.equal(unblockedContext.task.status, "ready");
+  assert.equal(unblockedContext.task.waitState, "ready");
+  assert.equal(unblockedContext.task.blockingTasks.length, 0);
+});
 
-  delete process.env.AGENTSQUAD_AGENT_ID;
-  delete process.env.AGENTSQUAD_SESSION_ID;
+test("notifyTaskDone waits for downstream validation and reopens the developer task on feedback", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "agentsquad-"));
+  const config = defaultConfig();
+
+  const developer = await spawnAgent(cwd, config, {
+    provider: "generic",
+    session: "default",
+    workdir: cwd,
+    role: "developer",
+    goal: "Build feature 1",
+    task: "Implement feature 1",
+  });
+
+  const tester = await spawnAgent(cwd, config, {
+    provider: "generic",
+    session: "default",
+    workdir: cwd,
+    role: "tester",
+    goal: "Validate feature 1",
+  });
+
+  const developerTask = (await getTaskContext(cwd, { agent: developer.id, session: "default", noWait: true })).task;
+  const testerTask = await assignTask(cwd, {
+    session: "default",
+    agent: tester.id,
+    goal: "Validate feature 1",
+    task: "Test feature 1",
+    type: "testing",
+    dependsOn: [developerTask.id],
+  });
+
+  await updateTaskStatus(cwd, {
+    task: developerTask.id,
+    status: "in_progress",
+    agent: developer.id,
+    session: "default",
+  });
+
+  const notifyPromise = notifyTaskDone(cwd, {
+    task: developerTask.id,
+    agent: developer.id,
+    session: "default",
+    pollIntervalMs: 10,
+    note: "Implementation ready",
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  const developerInReview = await getTaskContext(cwd, { agent: developer.id, session: "default", noWait: true });
+  assert.equal(developerInReview.task.status, "in_review");
+
+  const testerReady = await getTaskContext(cwd, { agent: tester.id, session: "default", wait: true, pollIntervalMs: 10 });
+  assert.equal(testerReady.task.id, testerTask.id);
+  assert.equal(testerReady.task.status, "ready");
+
+  await updateTaskStatus(cwd, {
+    task: testerTask.id,
+    status: "blocked",
+    agent: tester.id,
+    session: "default",
+    note: "Regression found",
+  });
+
+  const notifyOutcome = await notifyPromise;
+  assert.equal(notifyOutcome.outcome, "changes_requested");
+  assert.match(notifyOutcome.feedback[0].message, /Regression found/);
+
+  const reopenedDeveloperTask = (await getTaskContext(cwd, { agent: developer.id, session: "default", noWait: true })).task;
+  assert.equal(reopenedDeveloperTask.status, "in_progress");
+  assert.match(reopenedDeveloperTask.blockingReason, /Regression found/);
+});
+
+test("notifyTaskDone finalizes once all downstream validators approve", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "agentsquad-"));
+  const config = defaultConfig();
+
+  const developer = await spawnAgent(cwd, config, {
+    provider: "generic",
+    session: "default",
+    workdir: cwd,
+    role: "developer",
+    goal: "Build feature 1",
+    task: "Implement feature 1",
+  });
+
+  const testerA = await spawnAgent(cwd, config, {
+    provider: "generic",
+    session: "default",
+    workdir: cwd,
+    role: "tester",
+    goal: "Validate feature 1",
+  });
+
+  const testerB = await spawnAgent(cwd, config, {
+    provider: "generic",
+    session: "default",
+    workdir: cwd,
+    role: "reviewer",
+    goal: "Review feature 1",
+  });
+
+  const developerTask = (await getTaskContext(cwd, { agent: developer.id, session: "default", noWait: true })).task;
+  const validationTask = await assignTask(cwd, {
+    session: "default",
+    agent: testerA.id,
+    goal: "Validate feature 1",
+    task: "Run test suite",
+    type: "testing",
+    dependsOn: [developerTask.id],
+  });
+  const reviewTask = await assignTask(cwd, {
+    session: "default",
+    agent: testerB.id,
+    goal: "Review feature 1",
+    task: "Review implementation",
+    type: "review",
+    dependsOn: [developerTask.id],
+  });
+
+  const notifyPromise = notifyTaskDone(cwd, {
+    task: developerTask.id,
+    agent: developer.id,
+    session: "default",
+    pollIntervalMs: 10,
+  });
+
+  await getTaskContext(cwd, { agent: testerA.id, session: "default", wait: true, pollIntervalMs: 10 });
+  await getTaskContext(cwd, { agent: testerB.id, session: "default", wait: true, pollIntervalMs: 10 });
+
+  await updateTaskStatus(cwd, {
+    task: validationTask.id,
+    status: "done",
+    agent: testerA.id,
+    session: "default",
+  });
+
+  let developerMidway = (await getTaskContext(cwd, { agent: developer.id, session: "default", noWait: true })).task;
+  assert.equal(developerMidway.status, "in_review");
+
+  await updateTaskStatus(cwd, {
+    task: reviewTask.id,
+    status: "done",
+    agent: testerB.id,
+    session: "default",
+  });
+
+  const notifyOutcome = await notifyPromise;
+  assert.equal(notifyOutcome.outcome, "finalized");
+  assert.equal(notifyOutcome.task.status, "done");
+
+  developerMidway = (await getTaskContext(cwd, { agent: developer.id, session: "default", noWait: true })).task;
+  assert.equal(developerMidway.status, "done");
 });
 
 test("executeObjective creates a planner agent and initial message", async () => {
