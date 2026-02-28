@@ -22,6 +22,8 @@ function createGenericCliAdapter(providerId) {
         stdoutPath: workspace.stdoutPath,
         stderrPath: workspace.stderrPath,
         stdinText: invocation.stdinText,
+        onStdout: invocation.onStdout,
+        onStderr: invocation.onStderr,
       });
 
       return {
@@ -41,9 +43,21 @@ async function buildMessageInvocation(agent, providerConfig, message, workspace)
     cwd: resolveCwd(agent, providerConfig),
     env: buildEnv(agent, providerConfig),
     stdinText: undefined,
+    onStdout: null,
+    onStderr: null,
   };
 
   const payload = formatMessage(message);
+  base.onStdout = (line) => {
+    if (typeof message.onStdout === "function") {
+      message.onStdout(line);
+    }
+  };
+  base.onStderr = (line) => {
+    if (typeof message.onStderr === "function") {
+      message.onStderr(line);
+    }
+  };
 
   switch (providerConfig.transport) {
     case "args":
@@ -81,6 +95,7 @@ function buildEnv(agent, providerConfig) {
     AGENTSQUAD_AGENT_ROLE: agent.role || "",
     AGENTSQUAD_TASK_ID: agent.currentTaskId || "",
     AGENTSQUAD_DB_PATH: (agent.env && agent.env.AGENTSQUAD_DB_PATH) || process.env.AGENTSQUAD_DB_PATH || "",
+    AGENTSQUAD_WORKSPACE_ROOT: (agent.env && agent.env.AGENTSQUAD_WORKSPACE_ROOT) || process.env.AGENTSQUAD_WORKSPACE_ROOT || "",
   };
 }
 

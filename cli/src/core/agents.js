@@ -1,9 +1,10 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
-const { ensureWorkspace, ensureAgentWorkspace, getAgentsRoot, getDatabasePath, pathExists, readJsonFile, writeJsonFile } = require("./state");
+const { ensureWorkspace, ensureAgentWorkspace, getAgentsRoot, getDatabasePath, getWorkspaceRoot, pathExists, readJsonFile, writeJsonFile } = require("./state");
 const { createId } = require("./ids");
 const { appendEvent } = require("./events");
+const { appendActivityLog } = require("./activity-logs");
 const { AgentsquadError } = require("./errors");
 const { ensureDatabase, getAll, getOne, runStatement } = require("./db");
 const { buildAgentId, generateAgentName } = require("./agent-naming");
@@ -172,6 +173,7 @@ async function spawnAgent(cwd, config, options) {
   const adapter = resolveProvider(options.provider);
   const now = new Date().toISOString();
   const workdir = path.resolve(options.workdir || cwd);
+  const workspaceRoot = getWorkspaceRoot(cwd);
   const role = options.role || "worker";
   const name = options.name || generateAgentName(Date.now());
   const agentId = await createHumanReadableAgentId(cwd, sessionId, name, role);
@@ -216,6 +218,11 @@ async function spawnAgent(cwd, config, options) {
     currentTaskId: null,
   };
   agent.env.AGENTSQUAD_DB_PATH = getDatabasePath(cwd);
+  agent.env.AGENTSQUAD_WORKSPACE_ROOT = workspaceRoot;
+  if ((options.provider === "vibe" || options.provider === "mistral-vibe") && !agent.env.VIBE_HOME) {
+    agent.env.VIBE_HOME = path.join(workspaceRoot, "vibe-home");
+    await fs.mkdir(path.join(agent.env.VIBE_HOME, "logs"), { recursive: true });
+  }
 
   const workspace = await persistAgent(cwd, sessionId, agent);
   const launchCommand = [providerConfig.command, ...(providerConfig.args || [])].join(" ");
@@ -273,6 +280,7 @@ async function spawnAgent(cwd, config, options) {
       taskType: options.taskType || inferTaskType(role),
       acceptanceCriteria: options.acceptanceCriteria || null,
       createdByAgentId: agent.createdByAgentId,
+      reporter: options.reporter,
     });
     agent.currentTaskId = task.id;
     agent.updatedAt = new Date().toISOString();
@@ -285,6 +293,19 @@ async function spawnAgent(cwd, config, options) {
     mode: agent.mode,
     role: agent.role,
   }, agent.id);
+
+  await appendActivityLog(cwd, {
+    sessionId,
+    agentId: agent.id,
+    message: `${agent.id} started: ${options.task || agent.goal}`,
+    kind: "agent.lifecycle",
+    reporter: options.reporter,
+    details: {
+      providerId: agent.providerId,
+      role: agent.role,
+      task: options.task || null,
+    },
+  });
 
   return agent;
 }
@@ -326,6 +347,12 @@ async function stopAgent(cwd, sessionId, agentRef) {
   await persistAgent(cwd, sessionId, next);
   runStatement(cwd, "UPDATE agents SET status = ?, updated_at = ? WHERE id = ?", [next.status, next.updatedAt, next.id]);
   await appendEvent(cwd, sessionId, "agent.stopped", { pid: result.pid }, agent.id);
+  await appendActivityLog(cwd, {
+    sessionId,
+    agentId: agent.id,
+    kind: "agent.lifecycle",
+    message: `${agent.id} stopped`,
+  });
 
   return {
     agent: next,

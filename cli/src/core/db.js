@@ -2,6 +2,9 @@ const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
 const { ensureWorkspace, getWorkspaceRoot } = require("./state");
 
+const SQLITE_BUSY_TIMEOUT_MS = 30000;
+const SQLITE_BUSY_RETRY_DELAY_MS = 100;
+
 function getDatabasePath(cwd) {
   return path.join(getWorkspaceRoot(cwd), "agentsquad.db");
 }
@@ -9,7 +12,7 @@ function getDatabasePath(cwd) {
 async function ensureDatabase(cwd) {
   await ensureWorkspace(cwd);
   withDatabase(cwd, (db) => {
-    db.exec("PRAGMA foreign_keys = ON");
+    applyDatabasePragmas(db);
     db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
@@ -149,6 +152,22 @@ async function ensureDatabase(cwd) {
       CREATE INDEX IF NOT EXISTS idx_messages_from_agent ON messages(from_agent_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_messages_related_task ON messages(related_task_id);
 
+      CREATE TABLE IF NOT EXISTS activity_logs (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        agent_id TEXT,
+        level TEXT NOT NULL CHECK(level IN ('info','warning','error')),
+        kind TEXT NOT NULL,
+        message TEXT NOT NULL,
+        details_json TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY(agent_id) REFERENCES agents(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_activity_logs_session ON activity_logs(session_id, created_at ASC);
+      CREATE INDEX IF NOT EXISTS idx_activity_logs_agent ON activity_logs(agent_id, created_at ASC);
+
       CREATE TABLE IF NOT EXISTS agent_runs (
         id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL,
@@ -195,13 +214,29 @@ async function ensureDatabase(cwd) {
 }
 
 function withDatabase(cwd, callback) {
-  const db = new DatabaseSync(getDatabasePath(cwd));
-  db.exec("PRAGMA foreign_keys = ON");
+  const startedAt = Date.now();
 
-  try {
-    return callback(db);
-  } finally {
-    db.close();
+  while (true) {
+    const db = new DatabaseSync(getDatabasePath(cwd));
+    applyDatabasePragmas(db);
+
+    try {
+      return callback(db);
+    } catch (error) {
+      if (!isBusyError(error) || Date.now() - startedAt >= SQLITE_BUSY_TIMEOUT_MS) {
+        throw error;
+      }
+
+      db.close();
+      sleep(SQLITE_BUSY_RETRY_DELAY_MS);
+      continue;
+    } finally {
+      try {
+        db.close();
+      } catch {
+        // Ignore close errors on retry paths.
+      }
+    }
   }
 }
 
@@ -225,3 +260,23 @@ module.exports = {
   runStatement,
   withDatabase,
 };
+
+function applyDatabasePragmas(db) {
+  db.exec("PRAGMA foreign_keys = ON");
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+  db.exec("PRAGMA synchronous = NORMAL");
+}
+
+function isBusyError(error) {
+  const message = String((error && error.message) || "");
+  return message.includes("database is locked")
+    || message.includes("database is busy")
+    || message.includes("SQLITE_BUSY");
+}
+
+function sleep(milliseconds) {
+  const buffer = new SharedArrayBuffer(4);
+  const view = new Int32Array(buffer);
+  Atomics.wait(view, 0, 0, milliseconds);
+}

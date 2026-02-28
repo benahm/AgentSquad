@@ -1,6 +1,7 @@
 const { createId } = require("./ids");
 const { ensureDatabase, getAll, getOne, runStatement } = require("./db");
 const { appendEvent } = require("./events");
+const { appendActivityLog } = require("./activity-logs");
 const { AgentsquadError } = require("./errors");
 
 function resolveAgentIdentity(options = {}) {
@@ -74,6 +75,17 @@ async function createTask(cwd, input) {
 
   runStatement(cwd, "UPDATE agents SET current_task_id = ?, updated_at = ? WHERE id = ?", [task.id, now, task.agentId]);
   await appendEvent(cwd, task.sessionId, "task.assigned", { taskId: task.id, status: task.status }, task.agentId);
+  await appendActivityLog(cwd, {
+    sessionId: task.sessionId,
+    agentId: task.agentId,
+    kind: "task.assignment",
+    message: `${task.agentId} assigned: ${task.title}`,
+    details: {
+      status: task.status,
+      priority: task.priority,
+    },
+    reporter: input.reporter,
+  });
 
   return getTaskById(cwd, task.id);
 }
@@ -273,6 +285,15 @@ async function updateTaskStatus(cwd, options = {}) {
   );
 
   await appendEvent(cwd, task.sessionId, "task.status_changed", { taskId: task.id, from: task.status, to: nextStatus }, task.agentId);
+  await appendActivityLog(cwd, {
+    sessionId: task.sessionId,
+    agentId: task.agentId,
+    kind: "task.status",
+    message: `${task.agentId} status: ${task.status} -> ${nextStatus}`,
+    details: {
+      taskId: task.id,
+    },
+  });
   return getTaskById(cwd, task.id);
 }
 

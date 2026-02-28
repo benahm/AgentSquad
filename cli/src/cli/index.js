@@ -38,14 +38,13 @@ function buildProgram() {
       const result = await executeObjective(process.cwd(), config, {
         ...options,
         goal: goalParts.join(" "),
+        reporter: options.json ? null : (line) => process.stdout.write(`${line}\n`),
       });
 
       if (options.json) {
         process.stdout.write(`${JSON.stringify({ status: "ok", ...result }, null, 2)}\n`);
         return;
       }
-
-      process.stdout.write(`${result.summary}\n`);
     });
 
   registerProviderShortcutCommand(program, "vibe");
@@ -59,8 +58,10 @@ async function run(argv = process.argv) {
   const directGoal = detectDirectGoal(argv);
   if (directGoal) {
     const config = await loadConfig(process.cwd());
-    const result = await executeObjective(process.cwd(), config, { goal: directGoal });
-    process.stdout.write(`${result.summary}\n`);
+    await executeObjective(process.cwd(), config, {
+      goal: directGoal,
+      reporter: (line) => process.stdout.write(`${line}\n`),
+    });
     return;
   }
 
@@ -96,14 +97,13 @@ function registerProviderShortcutCommand(program, providerId) {
         ...options,
         provider: providerId,
         goal: goalParts.join(" "),
+        reporter: options.json ? null : (line) => process.stdout.write(`${line}\n`),
       });
 
       if (options.json) {
         process.stdout.write(`${JSON.stringify({ status: "ok", ...result }, null, 2)}\n`);
         return;
       }
-
-      process.stdout.write(`${result.summary}\n`);
     });
 }
 

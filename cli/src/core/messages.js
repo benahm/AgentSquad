@@ -5,6 +5,7 @@ const { createId } = require("./ids");
 const { appendJsonl, readJsonl } = require("../utils/jsonl");
 const { resolveAgent } = require("./agents");
 const { appendEvent } = require("./events");
+const { appendActivityLog } = require("./activity-logs");
 const { AgentsquadError } = require("./errors");
 const { ensureDatabase, getAll, getOne, runStatement } = require("./db");
 const { resolveAgentIdentity } = require("./tasks");
@@ -66,12 +67,44 @@ async function sendMessage(cwd, config, options) {
   const targetWorkspace = await ensureAgentWorkspace(cwd, sessionId, target.id);
   await appendJsonl(targetWorkspace.inboxPath, message);
   await appendEvent(cwd, sessionId, "message.queued", { messageId: message.id, from: message.from || "user" }, target.id);
+  await appendActivityLog(cwd, {
+    sessionId,
+    agentId: target.id,
+    kind: "message.queue",
+    message: `${source ? source.id : "user"} -> ${target.id}: ${message.kind}`,
+    details: {
+      messageId: message.id,
+    },
+    reporter: options.reporter,
+  });
 
   const providerConfig = mergeProviderConfig(config, target.providerId, target.profile);
   const adapter = resolveProvider(target.providerId);
 
   if (providerConfig.mode === "oneshot") {
-    const delivery = await adapter.deliverMessage(target, providerConfig, message, targetWorkspace);
+    const delivery = await adapter.deliverMessage(target, providerConfig, {
+      ...message,
+      reporter: options.reporter,
+      onStdout: async (line) => {
+        await appendActivityLog(cwd, {
+          sessionId,
+          agentId: target.id,
+          kind: "agent.stdout",
+          message: `${target.id} output: ${line}`,
+          reporter: options.reporter,
+        });
+      },
+      onStderr: async (line) => {
+        await appendActivityLog(cwd, {
+          sessionId,
+          agentId: target.id,
+          kind: "agent.stderr",
+          level: "warning",
+          message: `${target.id} error: ${line}`,
+          reporter: options.reporter,
+        });
+      },
+    }, targetWorkspace);
     message.deliveryStatus = delivery.ok ? "delivered" : "failed";
     message.delivery = delivery;
     await appendJsonl(getMessagesPath(cwd, sessionId), message);
@@ -93,6 +126,21 @@ async function sendMessage(cwd, config, options) {
       { messageId: message.id, providerId: target.providerId, code: delivery.code, signal: delivery.signal },
       target.id
     );
+    await appendActivityLog(cwd, {
+      sessionId,
+      agentId: target.id,
+      kind: "message.delivery",
+      level: delivery.ok ? "info" : "error",
+      message: delivery.ok
+        ? `${target.id} received: ${message.kind}`
+        : `${target.id} failed delivery: ${message.kind}`,
+      details: {
+        messageId: message.id,
+        code: delivery.code,
+        signal: delivery.signal,
+      },
+      reporter: options.reporter,
+    });
   } else {
     await appendEvent(cwd, sessionId, "message.deferred", { messageId: message.id }, target.id);
   }

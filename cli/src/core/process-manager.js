@@ -40,8 +40,38 @@ async function runOneshotProcess(command, args, options) {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    child.stdout.pipe(stdoutStream);
-    child.stderr.pipe(stderrStream);
+    let stdoutBuffer = "";
+    let stderrBuffer = "";
+
+    child.stdout.on("data", (chunk) => {
+      const text = chunk.toString("utf8");
+      stdoutStream.write(text);
+      if (options.onStdout) {
+        stdoutBuffer += text;
+        const lines = stdoutBuffer.split(/\r?\n/);
+        stdoutBuffer = lines.pop() || "";
+        for (const line of lines) {
+          if (line.trim()) {
+            options.onStdout(line);
+          }
+        }
+      }
+    });
+
+    child.stderr.on("data", (chunk) => {
+      const text = chunk.toString("utf8");
+      stderrStream.write(text);
+      if (options.onStderr) {
+        stderrBuffer += text;
+        const lines = stderrBuffer.split(/\r?\n/);
+        stderrBuffer = lines.pop() || "";
+        for (const line of lines) {
+          if (line.trim()) {
+            options.onStderr(line);
+          }
+        }
+      }
+    });
 
     if (options.stdinText) {
       child.stdin.write(options.stdinText);
@@ -49,6 +79,12 @@ async function runOneshotProcess(command, args, options) {
     child.stdin.end();
 
     child.on("close", (code, signal) => {
+      if (options.onStdout && stdoutBuffer.trim()) {
+        options.onStdout(stdoutBuffer.trim());
+      }
+      if (options.onStderr && stderrBuffer.trim()) {
+        options.onStderr(stderrBuffer.trim());
+      }
       stdoutStream.end();
       stderrStream.end();
       resolve({

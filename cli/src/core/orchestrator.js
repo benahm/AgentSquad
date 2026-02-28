@@ -4,6 +4,7 @@ const { ensureDatabase, getOne, runStatement } = require("./db");
 const { spawnAgent } = require("./agents");
 const { sendMessage } = require("./messages");
 const { appendEvent } = require("./events");
+const { appendActivityLog, listActivityLogs } = require("./activity-logs");
 
 function buildManagerPrompt(goal) {
   return [
@@ -68,6 +69,14 @@ async function executeObjective(cwd, config, options = {}) {
     updatedAt: now,
   });
 
+  await appendActivityLog(cwd, {
+    sessionId,
+    kind: "session.start",
+    message: `${provider}-planner started: planning ${JSON.stringify(goal)}`,
+    details: { provider, goal },
+    reporter: options.reporter,
+  });
+
   const manager = await spawnAgent(cwd, config, {
     provider,
     session: sessionId,
@@ -78,6 +87,7 @@ async function executeObjective(cwd, config, options = {}) {
     name: "manager",
     kind: "manager",
     systemPrompt: buildManagerPrompt(goal),
+    reporter: options.reporter,
   });
 
   runStatement(cwd, "UPDATE sessions SET manager_agent_id = ?, status = ?, updated_at = ? WHERE id = ?", [
@@ -94,6 +104,7 @@ async function executeObjective(cwd, config, options = {}) {
     to: manager.id,
     text: buildManagerPrompt(goal),
     kind: "instruction",
+    reporter: options.reporter,
   });
 
   return {
@@ -101,6 +112,7 @@ async function executeObjective(cwd, config, options = {}) {
     goal,
     manager,
     message: messageResult.message,
+    logs: await listActivityLogs(cwd, { session: sessionId }),
     summary: `Started ${manager.id} with ${provider} for objective: ${goal}`,
   };
 }

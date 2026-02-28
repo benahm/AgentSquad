@@ -10,6 +10,7 @@ const { sendMessage, listMessages } = require("../src/core/messages");
 const { getTaskContext, updateTaskStatus } = require("../src/core/tasks");
 const { executeObjective } = require("../src/core/orchestrator");
 const { detectDirectGoal } = require("../src/cli");
+const { listActivityLogs } = require("../src/core/activity-logs");
 
 test("spawnAgent creates a managed oneshot agent", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "agentsquad-"));
@@ -137,6 +138,10 @@ test("executeObjective creates a planner agent and initial message", async () =>
   const messages = await listMessages(cwd, { session: "default" });
   assert.equal(messages.length, 1);
   assert.match(messages[0].text, /project manager and planner/i);
+
+  const logs = await listActivityLogs(cwd, { session: "default" });
+  assert.ok(logs.length >= 3);
+  assert.match(logs[0].message, /planner started: planning/i);
 });
 
 test("vibe provider sends the prompt through --prompt", async () => {
