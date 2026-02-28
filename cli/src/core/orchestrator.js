@@ -6,16 +6,19 @@ const { sendMessage } = require("./messages");
 const { appendEvent } = require("./events");
 const { appendActivityLog, listActivityLogs } = require("./activity-logs");
 
-function buildManagerPrompt(goal) {
+function buildManagerPrompt(goal, provider) {
+  const providerName = provider || "vibe";
+  const workerCommand = `agentsquad agent run --provider ${providerName} --role <role> --goal <goal> --task <task>`;
+
   return [
     "You are the project manager and planner for this objective.",
     "You must create a high-level plan, identify the roles needed, and coordinate the project using the agentsquad CLI.",
-    "You can create worker agents with `agentsquad agent run --provider <vibe|codex|claude> --role <role> --goal <goal> --task <task>`.",
+    `Use the configured provider "${providerName}" for all agents and messages.`,
+    `You can create worker agents with \`${workerCommand}\`.`,
     "Each worker can recover its current assignment with `agentsquad task get`.",
     "You can communicate between agents with `agentsquad message send --to <agent-id> --text <message>`.",
     "You should break the objective into concrete tasks, assign roles, and drive the project to completion.",
     "When you create a worker, give it a focused role and a crisp task.",
-    "If you need a specific model family, you can choose between `vibe`, `codex`, and `claude`.",
     "",
     `User objective: ${goal}`,
   ].join("\n");
@@ -86,7 +89,7 @@ async function executeObjective(cwd, config, options = {}) {
     task: "Create a plan, define roles, and coordinate the project.",
     name: "manager",
     kind: "manager",
-    systemPrompt: buildManagerPrompt(goal),
+    systemPrompt: buildManagerPrompt(goal, provider),
     reporter: options.reporter,
   });
 
@@ -102,7 +105,7 @@ async function executeObjective(cwd, config, options = {}) {
   const messageResult = await sendMessage(cwd, config, {
     session: sessionId,
     to: manager.id,
-    text: buildManagerPrompt(goal),
+    text: buildManagerPrompt(goal, provider),
     kind: "instruction",
     reporter: options.reporter,
   });

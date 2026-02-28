@@ -12,6 +12,12 @@ const { executeObjective } = require("../src/core/orchestrator");
 const { detectDirectGoal } = require("../src/cli");
 const { listActivityLogs } = require("../src/core/activity-logs");
 
+async function createEchoStdinCommand(cwd, filename = "echo-stdin.js") {
+  const scriptPath = path.join(cwd, filename);
+  await fs.writeFile(scriptPath, "process.stdin.pipe(process.stdout);", "utf8");
+  return { command: process.execPath, args: [scriptPath] };
+}
+
 test("spawnAgent creates a managed oneshot agent", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "agentsquad-"));
   const config = defaultConfig();
@@ -36,7 +42,9 @@ test("spawnAgent creates a managed oneshot agent", async () => {
 test("sendMessage persists and delivers a oneshot message", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "agentsquad-"));
   const config = defaultConfig();
-  config.providers.generic.command = "cat";
+  const echo = await createEchoStdinCommand(cwd);
+  config.providers.generic.command = echo.command;
+  config.providers.generic.args = echo.args;
   config.providers.generic.transport = "stdin";
 
   const agent = await spawnAgent(cwd, config, {
@@ -115,9 +123,10 @@ test("task get resolves the current task from agent env", async () => {
 test("executeObjective creates a planner agent and initial message", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "agentsquad-"));
   const config = defaultConfig();
+  const echo = await createEchoStdinCommand(cwd, "echo-planner.js");
   config.providers.vibe = {
-    command: "cat",
-    args: [],
+    command: echo.command,
+    args: echo.args,
     mode: "oneshot",
     transport: "stdin",
     messageFormat: "plain",
@@ -138,6 +147,9 @@ test("executeObjective creates a planner agent and initial message", async () =>
   const messages = await listMessages(cwd, { session: "default" });
   assert.equal(messages.length, 1);
   assert.match(messages[0].text, /project manager and planner/i);
+  assert.match(messages[0].text, /provider "vibe"/i);
+  assert.ok(!/codex/i.test(messages[0].text));
+  assert.ok(!/claude/i.test(messages[0].text));
 
   const logs = await listActivityLogs(cwd, { session: "default" });
   assert.ok(logs.length >= 3);
