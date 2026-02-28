@@ -2,11 +2,12 @@
   "name": "webapp",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "bun@1.3.10",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint"
+    "dev": "bun ./node_modules/next/dist/bin/next dev",
+    "build": "bun ./node_modules/next/dist/bin/next build",
+    "start": "bun ./node_modules/next/dist/bin/next start",
+    "lint": "bun ./node_modules/eslint/bin/eslint.js"
   },
   "dependencies": {
     "next": "16.1.6",

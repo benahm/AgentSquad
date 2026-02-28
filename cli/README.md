@@ -37,7 +37,7 @@ Config par defaut :
 Creer un agent logique :
 
 ```bash
-agentsquad agent spawn --provider codex --name planner
+agentsquad agent run --provider codex --name planner
 ```
 
 Lister les agents :

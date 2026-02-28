@@ -6,8 +6,8 @@ function registerAgentCommands(program) {
   const agent = program.command("agent").description("Manage agents");
 
   agent
-    .command("spawn")
-    .description("Create a managed agent")
+    .command("run")
+    .description("Run a managed agent")
     .requiredOption("--provider <id>", "Provider id from agentsquad.config.json")
     .option("--name <name>", "Human-friendly agent name")
     .option("--session <id>", "Session id", "default")
