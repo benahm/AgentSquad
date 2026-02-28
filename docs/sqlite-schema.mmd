@@ -94,15 +94,6 @@ erDiagram
     TEXT read_at
   }
 
-  AGENT_CONTACTS {
-    TEXT id PK
-    TEXT session_id FK
-    TEXT agent_id FK
-    TEXT contact_agent_id FK
-    TEXT reason
-    TEXT created_at
-  }
-
   AGENT_RUNS {
     TEXT id PK
     TEXT agent_id FK
@@ -137,13 +128,11 @@ erDiagram
   SESSIONS ||--o{ MESSAGES : contains
   SESSIONS ||--o{ TASK_DEPENDENCIES : contains
   SESSIONS ||--o{ TASK_STATUS_HISTORY : contains
-  SESSIONS ||--o{ AGENT_CONTACTS : contains
   SESSIONS ||--o{ AGENT_RUNS : contains
   SESSIONS ||--o{ ARTIFACTS : contains
 
   AGENTS ||--o{ TASKS : owns
   AGENTS ||--o{ AGENT_RUNS : executes
-  AGENTS ||--o{ AGENT_CONTACTS : can_contact
   AGENTS ||--o{ MESSAGES : sends
   AGENTS ||--o{ MESSAGES : receives
   AGENTS ||--o{ TASK_STATUS_HISTORY : updates

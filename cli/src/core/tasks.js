@@ -144,22 +144,25 @@ function getCurrentTask(cwd, sessionId, agentId) {
     return null;
   }
 
-  const contacts = getAll(
+  const availableAgents = getAll(
     cwd,
     `SELECT
-      c.contact_agent_id AS id,
+      a.id,
+      a.name,
       a.role,
-      c.reason
-    FROM agent_contacts c
-    JOIN agents a ON a.id = c.contact_agent_id
-    WHERE c.agent_id = ?
-    ORDER BY c.contact_agent_id`,
-    [agentId]
+      a.status,
+      t.title AS taskTitle,
+      t.status AS taskStatus
+    FROM agents a
+    LEFT JOIN tasks t ON t.id = a.current_task_id
+    WHERE a.session_id = ? AND a.id != ?
+    ORDER BY a.role ASC, a.id ASC`,
+    [sessionId, agentId]
   );
 
   return {
     ...task,
-    contacts,
+    availableAgents,
   };
 }
 

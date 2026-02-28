@@ -149,19 +149,6 @@ async function ensureDatabase(cwd) {
       CREATE INDEX IF NOT EXISTS idx_messages_from_agent ON messages(from_agent_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_messages_related_task ON messages(related_task_id);
 
-      CREATE TABLE IF NOT EXISTS agent_contacts (
-        id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        agent_id TEXT NOT NULL,
-        contact_agent_id TEXT NOT NULL,
-        reason TEXT,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-        FOREIGN KEY(agent_id) REFERENCES agents(id) ON DELETE CASCADE,
-        FOREIGN KEY(contact_agent_id) REFERENCES agents(id) ON DELETE CASCADE,
-        UNIQUE(agent_id, contact_agent_id)
-      );
-
       CREATE TABLE IF NOT EXISTS agent_runs (
         id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL,

@@ -77,6 +77,15 @@ test("task get resolves the current task from agent env", async () => {
     task: "Write a smoke test plan",
   });
 
+  await spawnAgent(cwd, config, {
+    provider: "generic",
+    session: "default",
+    workdir: cwd,
+    role: "developer",
+    goal: "Build the app",
+    task: "Implement the note editor",
+  });
+
   process.env.AGENTSQUAD_AGENT_ID = agent.id;
   process.env.AGENTSQUAD_SESSION_ID = "default";
 
@@ -84,6 +93,9 @@ test("task get resolves the current task from agent env", async () => {
   assert.equal(context.agent.id, agent.id);
   assert.equal(context.task.status, "todo");
   assert.match(context.task.description, /smoke test/i);
+  assert.equal(context.task.availableAgents.length, 1);
+  assert.equal(context.task.availableAgents[0].role, "developer");
+  assert.match(context.task.availableAgents[0].taskTitle, /note editor/i);
 
   await updateTaskStatus(cwd, {
     task: context.task.id,

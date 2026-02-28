@@ -16,6 +16,12 @@ Main entities:
 - `agent_runs`: concrete executions of an agent
 - `artifacts`: files or outputs produced during a session
 
+Coordination model:
+
+- Any agent can contact any other agent in the same session.
+- There is no restriction table for allowed contacts.
+- `agentsquad task get` should expose the other agents in the session with their role, status, and current task so an agent can decide who to contact.
+
 Relationship highlights:
 
 - One session contains many agents, tasks, messages, runs, and artifacts.

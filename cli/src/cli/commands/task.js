@@ -17,13 +17,22 @@ function registerTaskCommands(program) {
           return `${result.agent.id} (${result.agent.role}) has no active task.`;
         }
 
-        return [
+        const lines = [
           `${result.agent.id} (${result.agent.role})`,
           `Goal: ${result.agent.goal}`,
           `Task: ${result.task.title}`,
           `Status: ${result.task.status}`,
           `Details: ${result.task.description}`,
-        ].join("\n");
+        ];
+
+        if (result.task.availableAgents && result.task.availableAgents.length) {
+          lines.push("Available agents:");
+          for (const agent of result.task.availableAgents) {
+            lines.push(`- ${agent.id} (${agent.role}) [${agent.status}]${agent.taskTitle ? ` ${agent.taskTitle}` : ""}`);
+          }
+        }
+
+        return lines.join("\n");
       });
     });
 
