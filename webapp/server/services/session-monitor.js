@@ -1,12 +1,12 @@
 import { ApiError } from "@/server/http/errors";
-import { normalizeAndValidateDatabasePath } from "@/server/sqlite/connection";
-import { getDataSource, registerDataSource } from "@/server/sqlite/source-registry";
-import { inspectSchema } from "@/server/sqlite/schema";
+import { normalizeAndValidateWorkspacePath } from "@/server/jsonl/connection";
+import { getDataSource, registerDataSource } from "@/server/jsonl/source-registry";
+import { inspectSchema } from "@/server/jsonl/schema";
 import {
   getSessionSnapshot,
   getSessionSummary,
   listSessions,
-} from "@/server/sqlite/queries";
+} from "@/server/jsonl/queries";
 
 function clampLimit(value, fallback) {
   const parsed = Number.parseInt(value, 10);
@@ -19,9 +19,9 @@ function clampLimit(value, fallback) {
 }
 
 export async function connectDataSource(inputPath) {
-  const dbPath = await normalizeAndValidateDatabasePath(inputPath);
-  const schema = await inspectSchema(dbPath);
-  return registerDataSource(dbPath, schema.detectedTables);
+  const workspacePath = await normalizeAndValidateWorkspacePath(inputPath);
+  const schema = await inspectSchema(workspacePath);
+  return registerDataSource(workspacePath, schema.detectedFiles);
 }
 
 export function requireDataSource(sourceId) {
@@ -36,7 +36,7 @@ export function requireDataSource(sourceId) {
 
 export async function listSourceSessions(sourceId) {
   const source = requireDataSource(sourceId);
-  return listSessions(source.dbPath);
+  return listSessions(source.workspacePath);
 }
 
 export async function getMonitoredSessionSnapshot(sourceId, sessionId, searchParams) {
@@ -46,7 +46,7 @@ export async function getMonitoredSessionSnapshot(sourceId, sessionId, searchPar
     logsLimit: clampLimit(searchParams.get("logsLimit"), 200),
   };
 
-  return getSessionSnapshot(source.dbPath, sessionId, options);
+  return getSessionSnapshot(source.workspacePath, sessionId, options);
 }
 
 export async function getMonitoredSessionSummary(sourceId, sessionId, searchParams) {
@@ -56,5 +56,5 @@ export async function getMonitoredSessionSummary(sourceId, sessionId, searchPara
     logsLimit: clampLimit(searchParams.get("logsLimit"), 200),
   };
 
-  return getSessionSummary(source.dbPath, sessionId, options);
+  return getSessionSummary(source.workspacePath, sessionId, options);
 }

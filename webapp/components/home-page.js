@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import styles from "./home-page.module.css";
 
-const STORAGE_KEY = "agentsquad.sqlite.dbPath";
+const STORAGE_KEY = "agentsquad.workspace.path";
 const MESSAGES_LIMIT = 200;
 const LOGS_LIMIT = 200;
 
@@ -93,13 +93,13 @@ function Section({ title, subtitle, children, aside = null }) {
 }
 
 export function HomePage() {
-  const [dbPath, setDbPath] = useState("");
+  const [workspacePath, setWorkspacePath] = useState("");
   const [savedPathLoaded, setSavedPathLoaded] = useState(false);
   const [source, setSource] = useState(null);
   const [sessions, setSessions] = useState([]);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [snapshot, setSnapshot] = useState(null);
-  const [statusMessage, setStatusMessage] = useState("Renseignez le chemin SQLite pour charger la supervision.");
+  const [statusMessage, setStatusMessage] = useState("Renseignez le chemin du workspace AgentSquad pour charger la supervision.");
   const [errorMessage, setErrorMessage] = useState("");
   const [isConnecting, setIsConnecting] = useState(false);
   const [isLoadingSession, setIsLoadingSession] = useState(false);
@@ -109,17 +109,17 @@ export function HomePage() {
   useEffect(() => {
     const stored = window.localStorage.getItem(STORAGE_KEY);
     if (stored) {
-      setDbPath(stored);
+      setWorkspacePath(stored);
     }
     setSavedPathLoaded(true);
   }, []);
 
   useEffect(() => {
-    if (!savedPathLoaded || !dbPath.trim()) {
+    if (!savedPathLoaded || !workspacePath.trim()) {
       return;
     }
 
-    void connectToDatabase(dbPath, { persist: false, autoSelectFirstSession: true });
+    void connectToWorkspace(workspacePath, { persist: false, autoSelectFirstSession: true });
     // We intentionally run once after localStorage hydration.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedPathLoaded]);
@@ -139,18 +139,18 @@ export function HomePage() {
     setStreamState("offline");
   }
 
-  async function connectToDatabase(nextDbPath, options = {}) {
-    const trimmedPath = nextDbPath.trim();
+  async function connectToWorkspace(nextWorkspacePath, options = {}) {
+    const trimmedPath = nextWorkspacePath.trim();
 
     if (!trimmedPath) {
-      setErrorMessage("Le chemin SQLite est requis.");
+      setErrorMessage("Le chemin du workspace est requis.");
       return;
     }
 
     closeStream();
     setIsConnecting(true);
     setErrorMessage("");
-    setStatusMessage("Connexion a la base SQLite en cours...");
+    setStatusMessage("Connexion au workspace AgentSquad en cours...");
 
     try {
       const sourcePayload = await readJson(
@@ -160,7 +160,7 @@ export function HomePage() {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            dbPath: trimmedPath,
+            workspacePath: trimmedPath,
           }),
         })
       );
@@ -190,11 +190,11 @@ export function HomePage() {
 
       if (!sessionsPayload.sessions.length) {
         setSnapshot(null);
-        setStatusMessage("Base connectee, mais aucune session n'a ete trouvee.");
+        setStatusMessage("Workspace connecte, mais aucune session n'a ete trouvee.");
         return;
       }
 
-      setStatusMessage(`Base connectee. ${sessionsPayload.sessions.length} session(s) detectee(s).`);
+      setStatusMessage(`Workspace connecte. ${sessionsPayload.sessions.length} session(s) detectee(s).`);
 
       if (nextSessionId) {
         await loadSession(sourcePayload.source.id, nextSessionId);
@@ -205,7 +205,7 @@ export function HomePage() {
       setSelectedSessionId("");
       setSnapshot(null);
       setErrorMessage(normalizeError(error));
-      setStatusMessage("Impossible de charger la base SQLite.");
+      setStatusMessage("Impossible de charger le workspace AgentSquad.");
     } finally {
       setIsConnecting(false);
     }
@@ -368,29 +368,29 @@ export function HomePage() {
       <section className={styles.hero}>
         <div>
           <p className={styles.eyebrow}>AgentSquad Monitor</p>
-          <h1>Sessions, tasks, agents, messages et logs SQLite en direct.</h1>
+          <h1>Sessions, tasks, agents, messages et logs JSONL en direct.</h1>
           <p className={styles.description}>
-            Entrez le chemin de la base SQLite, on le garde dans le navigateur, puis la page charge la session et
+            Entrez le chemin du workspace AgentSquad, on le garde dans le navigateur, puis la page charge la session et
             suit ce qui change en live.
           </p>
         </div>
 
         <div className={styles.connectionCard}>
           <label className={styles.fieldLabel} htmlFor="db-path">
-            Chemin SQLite
+            Chemin workspace
           </label>
           <div className={styles.connectionRow}>
             <input
               id="db-path"
               className={styles.input}
-              placeholder="C:\\Users\\...\\agentsquad.db ou /mnt/c/.../agentsquad.db"
-              value={dbPath}
-              onChange={(event) => setDbPath(event.target.value)}
+              placeholder="C:\\Users\\...\\.agentsquad ou /mnt/c/.../.agentsquad"
+              value={workspacePath}
+              onChange={(event) => setWorkspacePath(event.target.value)}
             />
             <button
               className={styles.primaryButton}
               type="button"
-              onClick={() => connectToDatabase(dbPath, { persist: true, autoSelectFirstSession: true })}
+              onClick={() => connectToWorkspace(workspacePath, { persist: true, autoSelectFirstSession: true })}
               disabled={isConnecting}
             >
               {isConnecting ? "Connexion..." : "Connecter"}
@@ -417,8 +417,8 @@ export function HomePage() {
                 <strong>{source.schema}</strong>
               </div>
               <div>
-                <span>Tables</span>
-                <strong>{source.detectedTables.length}</strong>
+                <span>Fichiers</span>
+                <strong>{source.detectedFiles.length}</strong>
               </div>
             </div>
           ) : null}
@@ -450,7 +450,7 @@ export function HomePage() {
           ) : (
             <EmptyState
               title="Aucune session chargee"
-              description="Connectez une base SQLite AgentSquad pour afficher les sessions disponibles."
+              description="Connectez un workspace AgentSquad pour afficher les sessions disponibles."
             />
           )}
         </Section>

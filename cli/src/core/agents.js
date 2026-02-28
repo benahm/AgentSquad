@@ -1,42 +1,21 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
-const { ensureWorkspace, ensureAgentWorkspace, getAgentsRoot, getDatabasePath, getWorkspaceRoot, pathExists, readJsonFile, writeJsonFile } = require("./state");
+const { ensureWorkspace, ensureAgentWorkspace, getAgentsRoot, getWorkspaceRoot, pathExists, readJsonFile, writeJsonFile } = require("./state");
 const { createId } = require("./ids");
 const { appendEvent } = require("./events");
 const { appendActivityLog } = require("./activity-logs");
 const { AgentsquadError } = require("./errors");
-const { ensureDatabase, getAll, getOne, runStatement } = require("./db");
 const { buildAgentId, generateAgentName } = require("./agent-naming");
 const { createTask } = require("./tasks");
 const { resolveProvider, mergeProviderConfig } = require("../providers/adapter-registry");
 const { startDetachedProcess, readPid, isPidAlive, stopPid } = require("./process-manager");
+const { appendSnapshot, readSession, readSnapshots } = require("./store");
 
 async function listAgents(cwd, sessionId = "default") {
   await ensureWorkspace(cwd, sessionId);
-  await ensureDatabase(cwd);
-  const persistedAgents = getAll(
-    cwd,
-    `SELECT
-      id,
-      name,
-      role,
-      kind,
-      provider_id AS providerId,
-      profile,
-      session_id AS sessionId,
-      goal,
-      mode,
-      workdir,
-      created_at AS createdAt,
-      updated_at AS updatedAt,
-      status,
-      current_task_id AS currentTaskId
-    FROM agents
-    WHERE session_id = ?
-    ORDER BY created_at ASC`,
-    [sessionId]
-  );
+  const persistedAgents = (await readSnapshots(cwd, sessionId, "agents"))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 
   if (persistedAgents.length) {
     const hydrated = [];
@@ -111,63 +90,24 @@ async function resolveAgent(cwd, sessionId, agentRef) {
 async function persistAgent(cwd, sessionId, agent) {
   const workspace = await ensureAgentWorkspace(cwd, sessionId, agent.id);
   await writeJsonFile(workspace.agentPath, agent);
-  await ensureDatabase(cwd);
-  runStatement(
-    cwd,
-    `INSERT INTO agents (
-      id, session_id, name, role, kind, provider_id, profile, goal, status, mode, workdir,
-      current_task_id, parent_agent_id, created_by_agent_id, system_prompt, launch_command,
-      last_heartbeat_at, created_at, updated_at, archived_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      session_id = excluded.session_id,
-      name = excluded.name,
-      role = excluded.role,
-      kind = excluded.kind,
-      provider_id = excluded.provider_id,
-      profile = excluded.profile,
-      goal = excluded.goal,
-      status = excluded.status,
-      mode = excluded.mode,
-      workdir = excluded.workdir,
-      current_task_id = excluded.current_task_id,
-      parent_agent_id = excluded.parent_agent_id,
-      created_by_agent_id = excluded.created_by_agent_id,
-      system_prompt = excluded.system_prompt,
-      launch_command = excluded.launch_command,
-      last_heartbeat_at = excluded.last_heartbeat_at,
-      updated_at = excluded.updated_at,
-      archived_at = excluded.archived_at`,
-    [
-      agent.id,
-      sessionId,
-      agent.name || "worker",
-      agent.role || "worker",
-      agent.kind || "worker",
-      agent.providerId,
-      agent.profile || null,
-      agent.goal || "Support the project goal",
-      agent.status,
-      agent.mode || "oneshot",
-      agent.workdir,
-      agent.currentTaskId || null,
-      agent.parentAgentId || null,
-      agent.createdByAgentId || null,
-      agent.systemPrompt || null,
-      agent.launchCommand || null,
-      agent.lastHeartbeatAt || null,
-      agent.createdAt,
-      agent.updatedAt,
-      agent.archivedAt || null,
-    ]
-  );
+  await appendSnapshot(cwd, sessionId, "agents", agent);
   return workspace;
+}
+
+async function persistSession(cwd, sessionId, sessionPatch) {
+  const existing = await readSession(cwd, sessionId);
+  const next = {
+    ...(existing || {}),
+    ...sessionPatch,
+    id: sessionId,
+  };
+  await appendSnapshot(cwd, sessionId, "session", next);
+  return next;
 }
 
 async function spawnAgent(cwd, config, options) {
   const sessionId = options.session || config.defaultSession || "default";
   await ensureWorkspace(cwd, sessionId);
-  await ensureDatabase(cwd);
 
   const providerConfig = mergeProviderConfig(config, options.provider, options.profile);
   const adapter = resolveProvider(options.provider);
@@ -178,24 +118,17 @@ async function spawnAgent(cwd, config, options) {
   const name = options.name || generateAgentName(Date.now());
   const agentId = await createHumanReadableAgentId(cwd, sessionId, name, role);
 
-  runStatement(
-    cwd,
-    `INSERT INTO sessions (id, title, goal, status, manager_agent_id, provider_id, root_workdir, created_at, updated_at, completed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at`,
-    [
-      sessionId,
-      sessionId,
-      options.goal || `Session ${sessionId}`,
-      "active",
-      null,
-      options.provider,
-      workdir,
-      now,
-      now,
-      null,
-    ]
-  );
+  await persistSession(cwd, sessionId, {
+    title: sessionId,
+    goal: options.goal || `Session ${sessionId}`,
+    status: "active",
+    managerAgentId: null,
+    providerId: options.provider,
+    rootWorkdir: workdir,
+    createdAt: now,
+    updatedAt: now,
+    completedAt: null,
+  });
 
   const agent = {
     id: agentId,
@@ -216,8 +149,10 @@ async function spawnAgent(cwd, config, options) {
     createdByAgentId: options.createdByAgentId || null,
     systemPrompt: options.systemPrompt || null,
     currentTaskId: null,
+    launchCommand: null,
+    lastHeartbeatAt: null,
+    archivedAt: null,
   };
-  agent.env.AGENTSQUAD_DB_PATH = getDatabasePath(cwd);
   agent.env.AGENTSQUAD_WORKSPACE_ROOT = workspaceRoot;
   if ((options.provider === "vibe" || options.provider === "mistral-vibe") && !agent.env.VIBE_HOME) {
     agent.env.VIBE_HOME = path.join(workspaceRoot, "vibe-home");
@@ -229,28 +164,22 @@ async function spawnAgent(cwd, config, options) {
   agent.launchCommand = launchCommand;
   await persistAgent(cwd, sessionId, agent);
 
-  runStatement(
-    cwd,
-    `INSERT INTO agent_runs (
-      id, agent_id, session_id, provider_id, command, args_json, pid, exit_code, exit_signal, status, stdout_path, stderr_path, started_at, ended_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      createId("run"),
-      agent.id,
-      sessionId,
-      agent.providerId,
-      providerConfig.command,
-      JSON.stringify(providerConfig.args || []),
-      null,
-      null,
-      null,
-      providerConfig.mode === "detached" ? "starting" : "completed",
-      workspace.stdoutPath,
-      workspace.stderrPath,
-      now,
-      providerConfig.mode === "detached" ? null : now,
-    ]
-  );
+  await appendSnapshot(cwd, sessionId, "agentRuns", {
+    id: createId("run"),
+    agentId: agent.id,
+    sessionId,
+    providerId: agent.providerId,
+    command: providerConfig.command,
+    argsJson: JSON.stringify(providerConfig.args || []),
+    pid: null,
+    exitCode: null,
+    exitSignal: null,
+    status: providerConfig.mode === "detached" ? "starting" : "completed",
+    stdoutPath: workspace.stdoutPath,
+    stderrPath: workspace.stderrPath,
+    startedAt: now,
+    endedAt: providerConfig.mode === "detached" ? null : now,
+  });
 
   if (providerConfig.mode === "detached") {
     const invocation = adapter.createSpawnInvocation(agent, providerConfig);
@@ -356,7 +285,6 @@ async function stopAgent(cwd, sessionId, agentRef) {
     updatedAt: new Date().toISOString(),
   };
   await persistAgent(cwd, sessionId, next);
-  runStatement(cwd, "UPDATE agents SET status = ?, updated_at = ? WHERE id = ?", [next.status, next.updatedAt, next.id]);
   await appendEvent(cwd, sessionId, "agent.stopped", { pid: result.pid }, agent.id);
   await appendActivityLog(cwd, {
     sessionId,
@@ -401,11 +329,10 @@ async function followLog(logPath) {
 }
 
 async function createHumanReadableAgentId(cwd, sessionId, name, role) {
-  await ensureDatabase(cwd);
   let index = 0;
   while (true) {
     const candidate = buildAgentId(name, role, index);
-    const existing = getOne(cwd, "SELECT id FROM agents WHERE id = ? AND session_id = ?", [candidate, sessionId]);
+    const existing = (await readSnapshots(cwd, sessionId, "agents")).find((entry) => entry.id === candidate);
     if (!existing) {
       return candidate;
     }
@@ -458,4 +385,6 @@ module.exports = {
   showLogs,
   spawnAgent,
   stopAgent,
+  persistAgent,
+  persistSession,
 };

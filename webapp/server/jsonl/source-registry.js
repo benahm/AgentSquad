@@ -7,21 +7,21 @@ function createSourceId() {
   return `src_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export function registerDataSource(dbPath, detectedTables) {
-  const normalizedPath = path.resolve(dbPath);
-  const existing = [...registry.values()].find((entry) => entry.dbPath === normalizedPath);
+export function registerDataSource(workspacePath, detectedFiles) {
+  const normalizedPath = path.resolve(workspacePath);
+  const existing = [...registry.values()].find((entry) => entry.workspacePath === normalizedPath);
 
   if (existing) {
-    existing.detectedTables = detectedTables;
+    existing.detectedFiles = detectedFiles;
     existing.updatedAt = new Date().toISOString();
     return existing;
   }
 
   const source = {
     id: createSourceId(),
-    dbPath: normalizedPath,
-    schema: "agentsquad",
-    detectedTables,
+    workspacePath: normalizedPath,
+    schema: "agentsquad-jsonl",
+    detectedFiles,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -33,4 +33,3 @@ export function registerDataSource(dbPath, detectedTables) {
 export function getDataSource(sourceId) {
   return registry.get(sourceId) || null;
 }
-

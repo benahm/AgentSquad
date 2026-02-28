@@ -7,7 +7,7 @@ import {
   listLogsSince,
   listMessagesSince,
   listTasks,
-} from "@/server/sqlite/queries";
+} from "@/server/jsonl/queries";
 
 const POLL_INTERVAL_MS = 1_000;
 const HEARTBEAT_INTERVAL_MS = 15_000;
@@ -62,12 +62,12 @@ export function createSessionStream(sourceId, sessionId, searchParams) {
       };
 
       try {
-        const snapshot = await getSessionSnapshot(source.dbPath, sessionId, {
+        const snapshot = await getSessionSnapshot(source.workspacePath, sessionId, {
           messagesLimit,
           logsLimit,
         });
 
-        markers = await getSessionChangeMarkers(source.dbPath, sessionId);
+        markers = await getSessionChangeMarkers(source.workspacePath, sessionId);
         send("snapshot", snapshot);
 
         heartbeatTimer = setInterval(() => {
@@ -85,10 +85,10 @@ export function createSessionStream(sourceId, sessionId, searchParams) {
           polling = true;
 
           try {
-            const nextMarkers = await getSessionChangeMarkers(source.dbPath, sessionId);
+            const nextMarkers = await getSessionChangeMarkers(source.workspacePath, sessionId);
 
             if (nextMarkers.sessionUpdatedAt !== markers.sessionUpdatedAt) {
-              const payload = await getSessionSummary(source.dbPath, sessionId, {
+              const payload = await getSessionSummary(source.workspacePath, sessionId, {
                 messagesLimit,
                 logsLimit,
               });
@@ -96,8 +96,8 @@ export function createSessionStream(sourceId, sessionId, searchParams) {
             }
 
             if (nextMarkers.agentsUpdatedAt !== markers.agentsUpdatedAt) {
-              const agents = await listAgents(source.dbPath, sessionId);
-              const payload = await getSessionSummary(source.dbPath, sessionId, {
+              const agents = await listAgents(source.workspacePath, sessionId);
+              const payload = await getSessionSummary(source.workspacePath, sessionId, {
                 messagesLimit,
                 logsLimit,
               });
@@ -108,8 +108,8 @@ export function createSessionStream(sourceId, sessionId, searchParams) {
             }
 
             if (nextMarkers.tasksUpdatedAt !== markers.tasksUpdatedAt) {
-              const tasks = await listTasks(source.dbPath, sessionId);
-              const payload = await getSessionSummary(source.dbPath, sessionId, {
+              const tasks = await listTasks(source.workspacePath, sessionId);
+              const payload = await getSessionSummary(source.workspacePath, sessionId, {
                 messagesLimit,
                 logsLimit,
               });
@@ -120,7 +120,7 @@ export function createSessionStream(sourceId, sessionId, searchParams) {
             }
 
             const newMessages = await listMessagesSince(
-              source.dbPath,
+              source.workspacePath,
               sessionId,
               createCursor(markers.lastMessageCreatedAt, markers.lastMessageId),
               messagesLimit
@@ -134,7 +134,7 @@ export function createSessionStream(sourceId, sessionId, searchParams) {
             }
 
             const newLogs = await listLogsSince(
-              source.dbPath,
+              source.workspacePath,
               sessionId,
               createCursor(markers.lastLogCreatedAt, markers.lastLogId),
               logsLimit

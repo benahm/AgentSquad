@@ -612,12 +612,9 @@ test("workspace root resolution honors propagated agent environment", () => {
   const repoRoot = path.join("C:", "workspace", "repo");
   const nestedCwd = path.join(repoRoot, "test");
   const workspaceRoot = path.join(repoRoot, ".agentsquad");
-  const dbPath = path.join(workspaceRoot, "agentsquad.db");
   const previousWorkspaceRoot = process.env.AGENTSQUAD_WORKSPACE_ROOT;
-  const previousDbPath = process.env.AGENTSQUAD_DB_PATH;
 
   process.env.AGENTSQUAD_WORKSPACE_ROOT = workspaceRoot;
-  process.env.AGENTSQUAD_DB_PATH = dbPath;
 
   try {
     assert.equal(getWorkspaceRoot(nestedCwd), workspaceRoot);
@@ -626,12 +623,6 @@ test("workspace root resolution honors propagated agent environment", () => {
       delete process.env.AGENTSQUAD_WORKSPACE_ROOT;
     } else {
       process.env.AGENTSQUAD_WORKSPACE_ROOT = previousWorkspaceRoot;
-    }
-
-    if (previousDbPath === undefined) {
-      delete process.env.AGENTSQUAD_DB_PATH;
-    } else {
-      process.env.AGENTSQUAD_DB_PATH = previousDbPath;
     }
   }
 });

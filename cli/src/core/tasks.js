@@ -1,8 +1,8 @@
 const { createId } = require("./ids");
-const { ensureDatabase, getAll, getOne, runStatement } = require("./db");
 const { appendEvent } = require("./events");
 const { appendActivityLog } = require("./activity-logs");
 const { AgentsquadError } = require("./errors");
+const { appendRecord, appendSnapshot, readRecords, readSnapshots } = require("./store");
 
 const TERMINAL_TASK_STATUSES = new Set(["done", "failed", "cancelled"]);
 const DEPENDENCY_SATISFIED_STATUSES = new Set(["done"]);
@@ -78,8 +78,23 @@ function resolvePollInterval(options = {}) {
   return Math.max(100, Math.floor(value));
 }
 
+async function loadAgents(cwd, sessionId) {
+  return (await readSnapshots(cwd, sessionId, "agents")).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+async function loadTasks(cwd, sessionId) {
+  return (await readSnapshots(cwd, sessionId, "tasks")).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+async function loadDependencies(cwd, sessionId) {
+  return (await readRecords(cwd, sessionId, "taskDependencies")).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+async function appendTaskSnapshot(cwd, task) {
+  return appendSnapshot(cwd, task.sessionId, "tasks", task);
+}
+
 async function createTask(cwd, input) {
-  await ensureDatabase(cwd);
   const now = new Date().toISOString();
   const task = {
     id: input.id || createId("task"),
@@ -103,41 +118,17 @@ async function createTask(cwd, input) {
     updatedAt: now,
   };
 
-  runStatement(
-    cwd,
-    `INSERT INTO tasks (
-      id, session_id, agent_id, parent_task_id, title, goal, description, status,
-      priority, task_type, scope_path, acceptance_criteria, blocking_reason,
-      result_summary, created_by_agent_id, started_at, completed_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      task.id,
-      task.sessionId,
-      task.agentId,
-      task.parentTaskId,
-      task.title,
-      task.goal,
-      task.description,
-      task.status,
-      task.priority,
-      task.taskType,
-      task.scopePath,
-      task.acceptanceCriteria,
-      task.blockingReason,
-      task.resultSummary,
-      task.createdByAgentId,
-      task.startedAt,
-      task.completedAt,
-      task.createdAt,
-      task.updatedAt,
-    ]
-  );
-
-  runStatement(
-    cwd,
-    "INSERT INTO task_status_history (id, session_id, task_id, from_status, to_status, changed_by_agent_id, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    [createId("taskstatus"), task.sessionId, task.id, null, task.status, task.createdByAgentId, "Task created", now]
-  );
+  await appendTaskSnapshot(cwd, task);
+  await appendRecord(cwd, task.sessionId, "taskStatusHistory", {
+    id: createId("taskstatus"),
+    sessionId: task.sessionId,
+    taskId: task.id,
+    fromStatus: null,
+    toStatus: task.status,
+    changedByAgentId: task.createdByAgentId,
+    note: "Task created",
+    createdAt: now,
+  });
 
   const dependencies = normalizeDependencyDefinitions(input.dependencies);
   if (dependencies.length) {
@@ -146,7 +137,7 @@ async function createTask(cwd, input) {
     });
   }
 
-  runStatement(cwd, "UPDATE agents SET current_task_id = ?, updated_at = ? WHERE id = ?", [task.id, now, task.agentId]);
+  await updateAgentCurrentTask(cwd, task.sessionId, task.agentId, task.id, now);
   await appendEvent(cwd, task.sessionId, "task.assigned", { taskId: task.id, status: task.status }, task.agentId);
   await appendActivityLog(cwd, {
     sessionId: task.sessionId,
@@ -163,27 +154,47 @@ async function createTask(cwd, input) {
 
   await promoteTaskToReadyIfUnblocked(cwd, task.id, {
     changedByAgentId: task.createdByAgentId,
+    sessionId: task.sessionId,
   });
 
-  return getTaskById(cwd, task.id);
+  return getTaskById(cwd, task.id, task.sessionId);
+}
+
+async function updateAgentCurrentTask(cwd, sessionId, agentId, taskId, updatedAt) {
+  const agents = await loadAgents(cwd, sessionId);
+  const agent = agents.find((entry) => entry.id === agentId);
+  if (!agent) {
+    return;
+  }
+
+  await appendSnapshot(cwd, sessionId, "agents", {
+    ...agent,
+    currentTaskId: taskId,
+    updatedAt,
+  });
 }
 
 async function createTaskDependencies(cwd, sessionId, taskId, dependencies, options = {}) {
-  await ensureDatabase(cwd);
   const normalized = normalizeDependencyDefinitions(dependencies);
   if (!normalized.length) {
     return [];
   }
 
+  const existing = await loadDependencies(cwd, sessionId);
   const now = new Date().toISOString();
   for (const entry of normalized) {
-    runStatement(
-      cwd,
-      `INSERT OR IGNORE INTO task_dependencies (
-        id, session_id, task_id, depends_on_task_id, dependency_type, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?)`,
-      [createId("taskdep"), sessionId, taskId, entry.dependsOnTaskId, entry.dependencyType, now]
-    );
+    if (existing.some((row) => row.taskId === taskId && row.dependsOnTaskId === entry.dependsOnTaskId && row.dependencyType === entry.dependencyType)) {
+      continue;
+    }
+
+    await appendRecord(cwd, sessionId, "taskDependencies", {
+      id: createId("taskdep"),
+      sessionId,
+      taskId,
+      dependsOnTaskId: entry.dependsOnTaskId,
+      dependencyType: entry.dependencyType,
+      createdAt: now,
+    });
   }
 
   await appendEvent(cwd, sessionId, "task.dependencies_created", {
@@ -208,39 +219,39 @@ async function createTaskDependencies(cwd, sessionId, taskId, dependencies, opti
   return listTaskDependencies(cwd, taskId);
 }
 
-function getTaskById(cwd, taskId) {
-  const task = getOne(
-    cwd,
-    `SELECT
-      t.id,
-      t.session_id AS sessionId,
-      t.agent_id AS agentId,
-      t.parent_task_id AS parentTaskId,
-      t.title,
-      t.goal,
-      t.description,
-      t.status,
-      t.priority,
-      t.task_type AS taskType,
-      t.scope_path AS scopePath,
-      t.acceptance_criteria AS acceptanceCriteria,
-      t.blocking_reason AS blockingReason,
-      t.result_summary AS resultSummary,
-      t.created_by_agent_id AS createdByAgentId,
-      t.started_at AS startedAt,
-      t.completed_at AS completedAt,
-      t.created_at AS createdAt,
-      t.updated_at AS updatedAt
-    FROM tasks t
-    WHERE t.id = ?`,
-    [taskId]
-  );
+async function getTaskById(cwd, taskId, sessionIdHint = null) {
+  const sessionId = await findTaskSessionId(cwd, taskId, sessionIdHint);
+  if (!sessionId) {
+    return null;
+  }
 
+  const tasks = await loadTasks(cwd, sessionId);
+  const task = tasks.find((entry) => entry.id === taskId);
   return task ? hydrateTask(cwd, task) : null;
 }
 
-function hydrateTask(cwd, task) {
-  const dependencies = listTaskDependencies(cwd, task.id);
+async function findTaskSessionId(cwd, taskId, sessionIdHint = null) {
+  if (sessionIdHint) {
+    const hintedTasks = await loadTasks(cwd, sessionIdHint);
+    if (hintedTasks.some((entry) => entry.id === taskId)) {
+      return sessionIdHint;
+    }
+  }
+
+  const { listSessions } = require("./store");
+  const sessions = await listSessions(cwd);
+  for (const session of sessions) {
+    const tasks = await loadTasks(cwd, session.id);
+    if (tasks.some((entry) => entry.id === taskId)) {
+      return session.id;
+    }
+  }
+
+  return null;
+}
+
+async function hydrateTask(cwd, task) {
+  const dependencies = await listTaskDependencies(cwd, task.id, task.sessionId);
   const blockingTasks = dependencies.filter((entry) => {
     if (entry.dependencyType !== "blocks") {
       return false;
@@ -258,34 +269,39 @@ function hydrateTask(cwd, task) {
   };
 }
 
-function listTaskDependencies(cwd, taskId) {
-  return getAll(
-    cwd,
-    `SELECT
-      td.id,
-      td.task_id AS taskId,
-      td.depends_on_task_id AS dependsOnTaskId,
-      td.dependency_type AS dependencyType,
-      td.created_at AS createdAt,
-      t.title AS dependsOnTaskTitle,
-      t.status AS dependsOnTaskStatus,
-      t.task_type AS dependsOnTaskType,
-      t.agent_id AS dependsOnAgentId
-    FROM task_dependencies td
-    JOIN tasks t ON t.id = td.depends_on_task_id
-    WHERE td.task_id = ?
-    ORDER BY td.created_at ASC`,
-    [taskId]
-  );
+async function listTaskDependencies(cwd, taskId, sessionIdHint = null) {
+  const sessionId = await findTaskSessionId(cwd, taskId, sessionIdHint);
+  if (!sessionId) {
+    return [];
+  }
+
+  const [dependencies, tasks] = await Promise.all([
+    loadDependencies(cwd, sessionId),
+    loadTasks(cwd, sessionId),
+  ]);
+
+  return dependencies
+    .filter((entry) => entry.taskId === taskId)
+    .map((entry) => {
+      const task = tasks.find((candidate) => candidate.id === entry.dependsOnTaskId);
+      return {
+        ...entry,
+        dependsOnTaskTitle: task ? task.title : null,
+        dependsOnTaskStatus: task ? task.status : null,
+        dependsOnTaskType: task ? task.taskType : null,
+        dependsOnAgentId: task ? task.agentId : null,
+      };
+    })
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
-function listBlockingDependencies(cwd, taskId) {
-  const task = getOne(cwd, "SELECT task_type AS taskType FROM tasks WHERE id = ?", [taskId]);
+async function listBlockingDependencies(cwd, taskId, sessionIdHint = null) {
+  const task = await getTaskById(cwd, taskId, sessionIdHint);
   if (!task) {
     return [];
   }
 
-  return listTaskDependencies(cwd, taskId).filter((entry) => {
+  return (await listTaskDependencies(cwd, taskId, task.sessionId)).filter((entry) => {
     if (entry.dependencyType !== "blocks") {
       return false;
     }
@@ -294,82 +310,66 @@ function listBlockingDependencies(cwd, taskId) {
   });
 }
 
-function listDependentTasks(cwd, taskId, options = {}) {
+async function listDependentTasks(cwd, taskId, options = {}) {
+  const sessionId = await findTaskSessionId(cwd, taskId, options.sessionId || null);
+  if (!sessionId) {
+    return [];
+  }
+
   const onlyBlocking = options.onlyBlocking !== false;
   const filterValidatorTypes = options.onlyValidatorTypes === true;
-  const params = [taskId];
-  let sql = `
-    SELECT
-      td.id,
-      td.task_id AS taskId,
-      td.depends_on_task_id AS dependsOnTaskId,
-      td.dependency_type AS dependencyType,
-      td.created_at AS createdAt,
-      t.session_id AS sessionId,
-      t.agent_id AS agentId,
-      t.parent_task_id AS parentTaskId,
-      t.title,
-      t.goal,
-      t.description,
-      t.status,
-      t.priority,
-      t.task_type AS taskType,
-      t.scope_path AS scopePath,
-      t.acceptance_criteria AS acceptanceCriteria,
-      t.blocking_reason AS blockingReason,
-      t.result_summary AS resultSummary,
-      t.created_by_agent_id AS createdByAgentId,
-      t.started_at AS startedAt,
-      t.completed_at AS completedAt,
-      t.created_at AS createdAt,
-      t.updated_at AS updatedAt
-    FROM task_dependencies td
-    JOIN tasks t ON t.id = td.task_id
-    WHERE td.depends_on_task_id = ?`;
+  const [dependencies, tasks] = await Promise.all([
+    loadDependencies(cwd, sessionId),
+    loadTasks(cwd, sessionId),
+  ]);
 
-  if (onlyBlocking) {
-    sql += " AND td.dependency_type = 'blocks'";
+  const dependents = tasks.filter((task) => dependencies.some((dependency) => {
+    if (dependency.dependsOnTaskId !== taskId || dependency.taskId !== task.id) {
+      return false;
+    }
+    return !onlyBlocking || dependency.dependencyType === "blocks";
+  }));
+
+  const filtered = filterValidatorTypes
+    ? dependents.filter((task) => task.taskType === "testing" || task.taskType === "review")
+    : dependents;
+
+  const hydrated = [];
+  for (const task of filtered.sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+    hydrated.push(await hydrateTask(cwd, task));
   }
-
-  if (filterValidatorTypes) {
-    sql += " AND t.task_type IN ('testing', 'review')";
-  }
-
-  sql += " ORDER BY t.created_at ASC";
-
-  return getAll(cwd, sql, params).map((task) => hydrateTask(cwd, task));
+  return hydrated;
 }
 
-function hasUnresolvedBlockingDependencies(cwd, taskId) {
-  return listBlockingDependencies(cwd, taskId).length > 0;
+async function hasUnresolvedBlockingDependencies(cwd, taskId, sessionIdHint = null) {
+  return (await listBlockingDependencies(cwd, taskId, sessionIdHint)).length > 0;
 }
 
 async function recordTaskStatusChange(cwd, task, nextStatus, options = {}) {
   const now = new Date().toISOString();
   const startedAt = nextStatus === "in_progress" && !task.startedAt ? now : task.startedAt;
   const completedAt = nextStatus === "done" ? now : TERMINAL_TASK_STATUSES.has(nextStatus) ? task.completedAt || now : null;
+  const updatedTask = {
+    ...task,
+    status: nextStatus,
+    blockingReason: options.blockingReason !== undefined ? options.blockingReason : task.blockingReason || null,
+    resultSummary: options.resultSummary !== undefined ? options.resultSummary : task.resultSummary || null,
+    startedAt,
+    completedAt,
+    updatedAt: now,
+  };
 
-  runStatement(
-    cwd,
-    `UPDATE tasks
-      SET status = ?, blocking_reason = ?, result_summary = ?, started_at = ?, completed_at = ?, updated_at = ?
-      WHERE id = ?`,
-    [
-      nextStatus,
-      options.blockingReason !== undefined ? options.blockingReason : task.blockingReason || null,
-      options.resultSummary !== undefined ? options.resultSummary : task.resultSummary || null,
-      startedAt,
-      completedAt,
-      now,
-      task.id,
-    ]
-  );
-
-  runStatement(
-    cwd,
-    "INSERT INTO task_status_history (id, session_id, task_id, from_status, to_status, changed_by_agent_id, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    [createId("taskstatus"), task.sessionId, task.id, task.status, nextStatus, options.changedByAgentId || null, options.note || null, now]
-  );
+  await appendTaskSnapshot(cwd, updatedTask);
+  await appendRecord(cwd, task.sessionId, "taskStatusHistory", {
+    id: createId("taskstatus"),
+    sessionId: task.sessionId,
+    taskId: task.id,
+    fromStatus: task.status,
+    toStatus: nextStatus,
+    changedByAgentId: options.changedByAgentId || null,
+    note: options.note || null,
+    createdAt: now,
+  });
 
   await appendEvent(cwd, task.sessionId, "task.status_changed", { taskId: task.id, from: task.status, to: nextStatus }, task.agentId);
   await appendActivityLog(cwd, {
@@ -383,16 +383,16 @@ async function recordTaskStatusChange(cwd, task, nextStatus, options = {}) {
     },
   });
 
-  return getTaskById(cwd, task.id);
+  return getTaskById(cwd, task.id, task.sessionId);
 }
 
 async function promoteTaskToReadyIfUnblocked(cwd, taskId, options = {}) {
-  const task = getTaskById(cwd, taskId);
+  const task = await getTaskById(cwd, taskId, options.sessionId || null);
   if (!task || TERMINAL_TASK_STATUSES.has(task.status) || task.status === "in_review" || task.status === "in_progress") {
     return task;
   }
 
-  if (hasUnresolvedBlockingDependencies(cwd, taskId)) {
+  if (await hasUnresolvedBlockingDependencies(cwd, taskId, task.sessionId)) {
     if (task.status !== "waiting") {
       return recordTaskStatusChange(cwd, task, "waiting", {
         changedByAgentId: options.changedByAgentId || null,
@@ -419,7 +419,7 @@ async function promoteTaskToReadyIfUnblocked(cwd, taskId, options = {}) {
 }
 
 async function refreshDependentTasks(cwd, taskId, options = {}) {
-  const dependents = listDependentTasks(cwd, taskId, { onlyBlocking: true });
+  const dependents = await listDependentTasks(cwd, taskId, { onlyBlocking: true, sessionId: options.sessionId || null });
   const refreshed = [];
   for (const dependent of dependents) {
     refreshed.push(await promoteTaskToReadyIfUnblocked(cwd, dependent.id, options));
@@ -429,12 +429,12 @@ async function refreshDependentTasks(cwd, taskId, options = {}) {
 }
 
 async function reopenUpstreamTasksFromFeedback(cwd, feedbackTask, options = {}) {
-  const dependencies = listTaskDependencies(cwd, feedbackTask.id).filter((entry) => entry.dependencyType === "blocks");
+  const dependencies = (await listTaskDependencies(cwd, feedbackTask.id, feedbackTask.sessionId)).filter((entry) => entry.dependencyType === "blocks");
   const reopened = [];
   const feedback = options.note || options.resultSummary || feedbackTask.resultSummary || feedbackTask.blockingReason || "Changes requested by downstream validation.";
 
   for (const dependency of dependencies) {
-    const upstream = getTaskById(cwd, dependency.dependsOnTaskId);
+    const upstream = await getTaskById(cwd, dependency.dependsOnTaskId, feedbackTask.sessionId);
     if (!upstream || TERMINAL_TASK_STATUSES.has(upstream.status) && upstream.status !== "done") {
       continue;
     }
@@ -459,7 +459,7 @@ async function reopenUpstreamTasksFromFeedback(cwd, feedbackTask, options = {}) 
 }
 
 async function finalizeTaskIfDownstreamAccepted(cwd, taskId, options = {}) {
-  const task = getTaskById(cwd, taskId);
+  const task = await getTaskById(cwd, taskId, options.sessionId || null);
   if (!task || TERMINAL_TASK_STATUSES.has(task.status) || task.status !== "in_review") {
     return {
       outcome: task ? "no_action" : "missing",
@@ -469,7 +469,7 @@ async function finalizeTaskIfDownstreamAccepted(cwd, taskId, options = {}) {
     };
   }
 
-  const dependentValidators = listDependentTasks(cwd, task.id, {
+  const dependentValidators = await listDependentTasks(cwd, task.id, {
     onlyBlocking: true,
     onlyValidatorTypes: true,
   });
@@ -490,7 +490,7 @@ async function finalizeTaskIfDownstreamAccepted(cwd, taskId, options = {}) {
 
     return {
       outcome: "changes_requested",
-      task: reopened[0] || getTaskById(cwd, task.id),
+      task: reopened[0] || await getTaskById(cwd, task.id, task.sessionId),
       pendingDependentTaskIds: pending.map((entry) => entry.id),
       feedback,
     };
@@ -532,7 +532,7 @@ async function waitForTaskAvailability(cwd, taskId, options = {}) {
   const pollIntervalMs = resolvePollInterval(options);
 
   while (true) {
-    const task = getTaskById(cwd, taskId);
+    const task = await getTaskById(cwd, taskId, options.sessionId || null);
     if (!task) {
       throw new AgentsquadError("TASK_NOT_FOUND", `No task found for "${taskId}".`);
     }
@@ -540,7 +540,7 @@ async function waitForTaskAvailability(cwd, taskId, options = {}) {
     const promoted = await promoteTaskToReadyIfUnblocked(cwd, taskId, {
       changedByAgentId: options.changedByAgentId || null,
     });
-    const hydrated = promoted ? getTaskById(cwd, taskId) : task;
+    const hydrated = promoted ? await getTaskById(cwd, taskId, task.sessionId) : task;
     if (!hydrated.blockingTasks.length || TERMINAL_TASK_STATUSES.has(hydrated.status)) {
       return hydrated;
     }
@@ -558,7 +558,7 @@ async function waitForTaskFinalization(cwd, taskId, options = {}) {
   const pollIntervalMs = resolvePollInterval(options);
 
   while (true) {
-    const currentTask = getTaskById(cwd, taskId);
+    const currentTask = await getTaskById(cwd, taskId, options.sessionId || null);
     if (!currentTask) {
       throw new AgentsquadError("TASK_NOT_FOUND", `No task found for "${taskId}".`);
     }
@@ -596,101 +596,73 @@ async function waitForTaskFinalization(cwd, taskId, options = {}) {
   }
 }
 
-function getCurrentTask(cwd, sessionId, agentId) {
-  const task = getOne(
-    cwd,
-    `SELECT
-      t.id,
-      t.session_id AS sessionId,
-      t.agent_id AS agentId,
-      t.title,
-      t.goal,
-      t.description,
-      t.status,
-      t.priority,
-      t.task_type AS taskType,
-      t.scope_path AS scopePath,
-      t.acceptance_criteria AS acceptanceCriteria,
-      t.blocking_reason AS blockingReason,
-      t.result_summary AS resultSummary,
-      t.started_at AS startedAt,
-      t.completed_at AS completedAt,
-      t.created_at AS createdAt,
-      t.updated_at AS updatedAt
-    FROM tasks t
-    WHERE t.session_id = ? AND t.agent_id = ?
-    ORDER BY CASE t.status
-      WHEN 'in_progress' THEN 0
-      WHEN 'in_review' THEN 1
-      WHEN 'ready' THEN 2
-      WHEN 'todo' THEN 3
-      WHEN 'waiting' THEN 4
-      WHEN 'blocked' THEN 5
-      ELSE 6
-    END, t.created_at DESC
-    LIMIT 1`,
-    [sessionId, agentId]
-  );
+async function getCurrentTask(cwd, sessionId, agentId) {
+  const tasks = await loadTasks(cwd, sessionId);
+  const sorted = tasks
+    .filter((entry) => entry.sessionId === sessionId && entry.agentId === agentId)
+    .sort((a, b) => {
+      const order = {
+        in_progress: 0,
+        in_review: 1,
+        ready: 2,
+        todo: 3,
+        waiting: 4,
+        blocked: 5,
+      };
+      const delta = (order[a.status] ?? 6) - (order[b.status] ?? 6);
+      if (delta !== 0) {
+        return delta;
+      }
+      return b.createdAt.localeCompare(a.createdAt);
+    });
 
+  const task = sorted[0];
   if (!task) {
     return null;
   }
 
-  const availableAgents = getAll(
-    cwd,
-    `SELECT
-      a.id,
-      a.name,
-      a.role,
-      a.status,
-      t.title AS taskTitle,
-      t.status AS taskStatus
-    FROM agents a
-    LEFT JOIN tasks t ON t.id = a.current_task_id
-    WHERE a.session_id = ? AND a.id != ?
-    ORDER BY a.role ASC, a.id ASC`,
-    [sessionId, agentId]
-  );
+  const agents = await loadAgents(cwd, sessionId);
+  const availableAgents = agents
+    .filter((entry) => entry.id !== agentId)
+    .map((agent) => {
+      const currentTask = tasks.find((entry) => entry.id === agent.currentTaskId) || null;
+      return {
+        id: agent.id,
+        name: agent.name,
+        role: agent.role,
+        status: agent.status,
+        taskTitle: currentTask ? currentTask.title : null,
+        taskStatus: currentTask ? currentTask.status : null,
+      };
+    })
+    .sort((a, b) => `${a.role}:${a.id}`.localeCompare(`${b.role}:${b.id}`));
 
   return {
-    ...hydrateTask(cwd, task),
+    ...(await hydrateTask(cwd, task)),
     availableAgents,
   };
 }
 
 async function getTaskContext(cwd, options = {}) {
-  await ensureDatabase(cwd);
   const agentId = resolveAgentIdentity(options);
   const sessionId = resolveSessionIdentity(options);
   if (!agentId) {
     throw new AgentsquadError("AGENT_ID_REQUIRED", "Unable to resolve the current agent. Provide --agent or set AGENTSQUAD_AGENT_ID.");
   }
 
-  const agent = getOne(
-    cwd,
-    `SELECT
-      id,
-      session_id AS sessionId,
-      name,
-      role,
-      goal,
-      status,
-      current_task_id AS currentTaskId,
-      workdir
-    FROM agents
-    WHERE id = ? AND session_id = ?`,
-    [agentId, sessionId]
-  );
+  const agents = await loadAgents(cwd, sessionId);
+  const agent = agents.find((entry) => entry.id === agentId && entry.sessionId === sessionId);
 
   if (!agent) {
     throw new AgentsquadError("AGENT_NOT_FOUND", `No agent found for "${agentId}" in session "${sessionId}".`);
   }
 
-  let task = getCurrentTask(cwd, sessionId, agentId);
+  let task = await getCurrentTask(cwd, sessionId, agentId);
   if (task && computeWaitMode(options)) {
     const readyTask = await waitForTaskAvailability(cwd, task.id, {
       ...options,
       changedByAgentId: agentId,
+      sessionId,
     });
     task = {
       ...readyTask,
@@ -699,40 +671,30 @@ async function getTaskContext(cwd, options = {}) {
   }
 
   return {
-    agent,
+    agent: {
+      id: agent.id,
+      sessionId: agent.sessionId,
+      name: agent.name,
+      role: agent.role,
+      goal: agent.goal,
+      status: agent.status,
+      currentTaskId: agent.currentTaskId,
+      workdir: agent.workdir,
+    },
     task,
   };
 }
 
 async function listTasks(cwd, options = {}) {
-  await ensureDatabase(cwd);
   const sessionId = resolveSessionIdentity(options);
-  const params = [sessionId];
-  let sql = `
-    SELECT
-      t.id,
-      t.session_id AS sessionId,
-      t.agent_id AS agentId,
-      a.role AS agentRole,
-      t.title,
-      t.goal,
-      t.description,
-      t.status,
-      t.priority,
-      t.task_type AS taskType,
-      t.created_at AS createdAt,
-      t.updated_at AS updatedAt
-    FROM tasks t
-    LEFT JOIN agents a ON a.id = t.agent_id
-    WHERE t.session_id = ?`;
-
-  if (options.agent) {
-    sql += " AND t.agent_id = ?";
-    params.push(options.agent);
+  const tasks = (await loadTasks(cwd, sessionId))
+    .filter((entry) => !options.agent || entry.agentId === options.agent)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const hydrated = [];
+  for (const task of tasks) {
+    hydrated.push(await hydrateTask(cwd, task));
   }
-
-  sql += " ORDER BY t.created_at ASC";
-  return getAll(cwd, sql, params).map((task) => hydrateTask(cwd, task));
+  return hydrated;
 }
 
 async function assignTask(cwd, options = {}) {
@@ -753,8 +715,8 @@ async function assignTask(cwd, options = {}) {
 }
 
 async function updateTaskStatus(cwd, options = {}) {
-  await ensureDatabase(cwd);
-  const task = getTaskById(cwd, options.task);
+  const sessionId = resolveSessionIdentity(options);
+  const task = await getTaskById(cwd, options.task, sessionId);
   if (!task) {
     throw new AgentsquadError("TASK_NOT_FOUND", `No task found for "${options.task}".`);
   }
@@ -771,6 +733,7 @@ async function updateTaskStatus(cwd, options = {}) {
 
   await refreshDependentTasks(cwd, updated.id, {
     changedByAgentId,
+    sessionId: updated.sessionId,
   });
 
   if ((nextStatus === "blocked" || nextStatus === "failed") && VALIDATOR_TASK_TYPES.has(updated.taskType)) {
@@ -782,21 +745,22 @@ async function updateTaskStatus(cwd, options = {}) {
   }
 
   if (nextStatus === "done" && VALIDATOR_TASK_TYPES.has(updated.taskType)) {
-    const upstreamDependencies = listTaskDependencies(cwd, updated.id).filter((entry) => entry.dependencyType === "blocks");
+    const upstreamDependencies = (await listTaskDependencies(cwd, updated.id, updated.sessionId)).filter((entry) => entry.dependencyType === "blocks");
     for (const dependency of upstreamDependencies) {
       await finalizeTaskIfDownstreamAccepted(cwd, dependency.dependsOnTaskId, {
         changedByAgentId,
         note: options.note || null,
+        sessionId: updated.sessionId,
       });
     }
   }
 
-  return getTaskById(cwd, task.id);
+  return getTaskById(cwd, task.id, task.sessionId);
 }
 
 async function notifyTaskDone(cwd, options = {}) {
-  await ensureDatabase(cwd);
-  const task = getTaskById(cwd, options.task);
+  const sessionId = resolveSessionIdentity(options);
+  const task = await getTaskById(cwd, options.task, sessionId);
   if (!task) {
     throw new AgentsquadError("TASK_NOT_FOUND", `No task found for "${options.task}".`);
   }
@@ -814,16 +778,16 @@ async function notifyTaskDone(cwd, options = {}) {
     await appendEvent(cwd, currentTask.sessionId, "task.finalization_started", { taskId: currentTask.id }, currentTask.agentId);
     await refreshDependentTasks(cwd, currentTask.id, {
       changedByAgentId,
+      sessionId: currentTask.sessionId,
       note: "Upstream implementation ready for validation",
     });
   }
 
-  const outcome = await waitForTaskFinalization(cwd, currentTask.id, {
+  return waitForTaskFinalization(cwd, currentTask.id, {
     ...options,
     changedByAgentId,
+    sessionId: currentTask.sessionId,
   });
-
-  return outcome;
 }
 
 module.exports = {

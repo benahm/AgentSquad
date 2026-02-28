@@ -1,5 +1,5 @@
 const { ensureWorkspace } = require("../../core/state");
-const { ensureDatabase } = require("../../core/db");
+const { ensureSessionStore } = require("../../core/store");
 const { printOutput } = require("../../utils/output");
 
 function registerInitCommand(program) {
@@ -9,7 +9,7 @@ function registerInitCommand(program) {
     .option("--json", "Return JSON output", false)
     .action(async (options) => {
       const workspace = await ensureWorkspace(process.cwd());
-      await ensureDatabase(process.cwd());
+      await ensureSessionStore(process.cwd(), "default");
 
       printOutput(options, {
         status: "ok",

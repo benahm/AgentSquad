@@ -8,10 +8,9 @@ export const dynamic = "force-dynamic";
 export async function POST(request) {
   try {
     const body = await request.json();
-    const source = await connectDataSource(body?.dbPath);
+    const source = await connectDataSource(body?.workspacePath);
     return ok({ source });
   } catch (error) {
     return errorResponse(error);
   }
 }
-

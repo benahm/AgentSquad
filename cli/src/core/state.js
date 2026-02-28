@@ -25,12 +25,6 @@ function getWorkspaceRoot(cwd) {
     return resolveExternalPath(explicitRoot);
   }
 
-  const explicitDbPath = process.env.AGENTSQUAD_DB_PATH;
-  if (explicitDbPath) {
-    const resolvedDbPath = resolveExternalPath(explicitDbPath);
-    return isWindowsAbsolutePath(resolvedDbPath) ? path.win32.dirname(resolvedDbPath) : path.dirname(resolvedDbPath);
-  }
-
   return path.join(cwd, WORKSPACE_DIR);
 }
 
@@ -50,8 +44,40 @@ function getAgentRoot(cwd, sessionId, agentId) {
   return path.join(getAgentsRoot(cwd, sessionId), agentId);
 }
 
-function getDatabasePath(cwd) {
-  return path.join(getWorkspaceRoot(cwd), "agentsquad.db");
+function getSessionStatePath(cwd, sessionId) {
+  return path.join(getSessionRoot(cwd, sessionId), "session.jsonl");
+}
+
+function getAgentsIndexPath(cwd, sessionId) {
+  return path.join(getSessionRoot(cwd, sessionId), "agents.jsonl");
+}
+
+function getTasksPath(cwd, sessionId) {
+  return path.join(getSessionRoot(cwd, sessionId), "tasks.jsonl");
+}
+
+function getTaskDependenciesPath(cwd, sessionId) {
+  return path.join(getSessionRoot(cwd, sessionId), "task-dependencies.jsonl");
+}
+
+function getTaskStatusHistoryPath(cwd, sessionId) {
+  return path.join(getSessionRoot(cwd, sessionId), "task-status-history.jsonl");
+}
+
+function getMessagesPath(cwd, sessionId) {
+  return path.join(getSessionRoot(cwd, sessionId), "messages.jsonl");
+}
+
+function getActivityLogsPath(cwd, sessionId) {
+  return path.join(getSessionRoot(cwd, sessionId), "activity-logs.jsonl");
+}
+
+function getAgentRunsPath(cwd, sessionId) {
+  return path.join(getSessionRoot(cwd, sessionId), "agent-runs.jsonl");
+}
+
+function getArtifactsPath(cwd, sessionId) {
+  return path.join(getSessionRoot(cwd, sessionId), "artifacts.jsonl");
 }
 
 async function ensureWorkspace(cwd, sessionId = "default") {
@@ -108,12 +134,20 @@ module.exports = {
   WORKSPACE_DIR,
   ensureWorkspace,
   ensureAgentWorkspace,
-  getDatabasePath,
   getWorkspaceRoot,
   getSessionRoot,
   getSessionsRoot,
   getAgentsRoot,
   getAgentRoot,
+  getSessionStatePath,
+  getAgentsIndexPath,
+  getTasksPath,
+  getTaskDependenciesPath,
+  getTaskStatusHistoryPath,
+  getMessagesPath,
+  getActivityLogsPath,
+  getAgentRunsPath,
+  getArtifactsPath,
   readJsonFile,
   writeJsonFile,
   pathExists,

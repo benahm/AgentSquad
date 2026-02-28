@@ -1,8 +1,7 @@
 const { createId } = require("./ids");
-const { ensureDatabase, getAll, runStatement } = require("./db");
+const { appendRecord, readRecords } = require("./store");
 
 async function appendActivityLog(cwd, input) {
-  await ensureDatabase(cwd);
   const entry = {
     id: createId("log"),
     sessionId: input.sessionId,
@@ -10,26 +9,11 @@ async function appendActivityLog(cwd, input) {
     level: input.level || "info",
     kind: input.kind || "activity",
     message: input.message,
-    details: input.details ? JSON.stringify(input.details) : null,
+    detailsJson: input.details ? JSON.stringify(input.details) : null,
     createdAt: new Date().toISOString(),
   };
 
-  runStatement(
-    cwd,
-    `INSERT INTO activity_logs (
-      id, session_id, agent_id, level, kind, message, details_json, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      entry.id,
-      entry.sessionId,
-      entry.agentId,
-      entry.level,
-      entry.kind,
-      entry.message,
-      entry.details,
-      entry.createdAt,
-    ]
-  );
+  await appendRecord(cwd, entry.sessionId, "activityLogs", entry);
 
   if (typeof input.reporter === "function") {
     input.reporter(entry.message, entry);
@@ -39,29 +23,11 @@ async function appendActivityLog(cwd, input) {
 }
 
 async function listActivityLogs(cwd, options = {}) {
-  await ensureDatabase(cwd);
   const sessionId = options.session || "default";
-  const params = [sessionId];
-  let sql = `
-    SELECT
-      id,
-      session_id AS sessionId,
-      agent_id AS agentId,
-      level,
-      kind,
-      message,
-      details_json AS detailsJson,
-      created_at AS createdAt
-    FROM activity_logs
-    WHERE session_id = ?`;
-
-  if (options.agent) {
-    sql += " AND agent_id = ?";
-    params.push(options.agent);
-  }
-
-  sql += " ORDER BY created_at ASC";
-  return getAll(cwd, sql, params);
+  const rows = await readRecords(cwd, sessionId, "activityLogs");
+  return rows
+    .filter((entry) => !options.agent || entry.agentId === options.agent)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 module.exports = {

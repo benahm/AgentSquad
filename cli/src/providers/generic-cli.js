@@ -94,7 +94,6 @@ function buildEnv(agent, providerConfig) {
     AGENTSQUAD_SESSION_ID: agent.sessionId,
     AGENTSQUAD_AGENT_ROLE: agent.role || "",
     AGENTSQUAD_TASK_ID: agent.currentTaskId || "",
-    AGENTSQUAD_DB_PATH: (agent.env && agent.env.AGENTSQUAD_DB_PATH) || process.env.AGENTSQUAD_DB_PATH || "",
     AGENTSQUAD_WORKSPACE_ROOT: (agent.env && agent.env.AGENTSQUAD_WORKSPACE_ROOT) || process.env.AGENTSQUAD_WORKSPACE_ROOT || "",
   };
 }

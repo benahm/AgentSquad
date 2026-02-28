@@ -1,10 +1,9 @@
 const path = require("node:path");
-const { createId } = require("./ids");
-const { ensureDatabase, getOne, runStatement } = require("./db");
 const { spawnAgent } = require("./agents");
 const { sendMessage } = require("./messages");
 const { appendEvent } = require("./events");
 const { appendActivityLog, listActivityLogs } = require("./activity-logs");
+const { appendSnapshot, readSession, readSnapshots } = require("./store");
 
 function buildManagerPrompt(goal, provider) {
   const providerName = provider || "vibe";
@@ -30,59 +29,43 @@ function buildManagerPrompt(goal, provider) {
   ].join("\n");
 }
 
-function getExistingManager(cwd, sessionId) {
-  return getOne(
-    cwd,
-    `SELECT
-      a.id,
-      a.name,
-      a.role,
-      a.kind,
-      a.provider_id AS providerId,
-      a.profile,
-      a.session_id AS sessionId,
-      a.goal,
-      a.mode,
-      a.workdir,
-      a.created_at AS createdAt,
-      a.updated_at AS updatedAt,
-      a.status,
-      a.current_task_id AS currentTaskId
-    FROM sessions s
-    JOIN agents a ON a.id = s.manager_agent_id
-    WHERE s.id = ? AND a.archived_at IS NULL`,
-    [sessionId]
-  );
+async function getExistingManager(cwd, sessionId) {
+  const session = await readSession(cwd, sessionId);
+  if (!session || !session.managerAgentId) {
+    return null;
+  }
+
+  const agents = await readSnapshots(cwd, sessionId, "agents");
+  return agents.find((entry) => entry.id === session.managerAgentId && !entry.archivedAt) || null;
 }
 
 async function ensureSessionRecord(cwd, config, session) {
-  await ensureDatabase(cwd);
-  const existing = getOne(cwd, "SELECT id FROM sessions WHERE id = ?", [session.id]);
+  const existing = await readSession(cwd, session.id);
   if (existing) {
-    runStatement(
-      cwd,
-      "UPDATE sessions SET title = ?, goal = ?, status = ?, provider_id = ?, root_workdir = ?, updated_at = ? WHERE id = ?",
-      [session.title, session.goal, session.status, session.providerId, session.rootWorkdir, session.updatedAt, session.id]
-    );
+    await appendSnapshot(cwd, session.id, "session", {
+      ...existing,
+      title: session.title,
+      goal: session.goal,
+      status: session.status,
+      providerId: session.providerId || config.orchestrator.provider,
+      rootWorkdir: session.rootWorkdir,
+      updatedAt: session.updatedAt,
+    });
     return;
   }
 
-  runStatement(
-    cwd,
-    "INSERT INTO sessions (id, title, goal, status, manager_agent_id, provider_id, root_workdir, created_at, updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    [
-      session.id,
-      session.title,
-      session.goal,
-      session.status,
-      session.managerAgentId || null,
-      session.providerId || config.orchestrator.provider,
-      session.rootWorkdir,
-      session.createdAt,
-      session.updatedAt,
-      null,
-    ]
-  );
+  await appendSnapshot(cwd, session.id, "session", {
+    id: session.id,
+    title: session.title,
+    goal: session.goal,
+    status: session.status,
+    managerAgentId: session.managerAgentId || null,
+    providerId: session.providerId || config.orchestrator.provider,
+    rootWorkdir: session.rootWorkdir,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    completedAt: null,
+  });
 }
 
 async function executeObjective(cwd, config, options = {}) {
@@ -103,13 +86,14 @@ async function executeObjective(cwd, config, options = {}) {
     updatedAt: now,
   });
 
-  const existingManager = getExistingManager(cwd, sessionId);
+  const existingManager = await getExistingManager(cwd, sessionId);
   if (existingManager) {
-    runStatement(cwd, "UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?", [
-      "active",
-      new Date().toISOString(),
-      sessionId,
-    ]);
+    const session = await readSession(cwd, sessionId);
+    await appendSnapshot(cwd, sessionId, "session", {
+      ...session,
+      status: "active",
+      updatedAt: new Date().toISOString(),
+    });
 
     await appendActivityLog(cwd, {
       sessionId,
@@ -151,12 +135,13 @@ async function executeObjective(cwd, config, options = {}) {
     reporter: options.reporter,
   });
 
-  runStatement(cwd, "UPDATE sessions SET manager_agent_id = ?, status = ?, updated_at = ? WHERE id = ?", [
-    manager.id,
-    "active",
-    new Date().toISOString(),
-    sessionId,
-  ]);
+  const session = await readSession(cwd, sessionId);
+  await appendSnapshot(cwd, sessionId, "session", {
+    ...session,
+    managerAgentId: manager.id,
+    status: "active",
+    updatedAt: new Date().toISOString(),
+  });
 
   await appendEvent(cwd, sessionId, "session.objective_started", { goal, provider }, manager.id);
 

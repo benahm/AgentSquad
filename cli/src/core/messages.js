@@ -1,20 +1,15 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
-const { ensureWorkspace, ensureAgentWorkspace, getSessionRoot } = require("./state");
+const { ensureWorkspace, ensureAgentWorkspace, getMessagesPath } = require("./state");
 const { createId } = require("./ids");
-const { appendJsonl, readJsonl } = require("../utils/jsonl");
+const { appendJsonl } = require("../utils/jsonl");
 const { resolveAgent } = require("./agents");
 const { appendEvent } = require("./events");
 const { appendActivityLog } = require("./activity-logs");
 const { AgentsquadError } = require("./errors");
-const { ensureDatabase, getAll, getOne, runStatement } = require("./db");
 const { resolveAgentIdentity } = require("./tasks");
 const { mergeProviderConfig, resolveProvider } = require("../providers/adapter-registry");
-const { runOneshotProcess } = require("./process-manager");
-
-function getMessagesPath(cwd, sessionId) {
-  return path.join(getSessionRoot(cwd, sessionId), "messages.jsonl");
-}
+const { projectLatestById, appendSnapshot, readSnapshots } = require("./store");
 
 function formatProviderStreamLine(agent, providerId, stream, line) {
   const normalized = String(line || "").trim();
@@ -51,7 +46,6 @@ function summarizeDeliveryFailure(providerId, lines) {
 async function sendMessage(cwd, config, options) {
   const sessionId = options.session || config.defaultSession || "default";
   await ensureWorkspace(cwd, sessionId);
-  await ensureDatabase(cwd);
 
   const text = await resolveMessageText(options);
   const target = await resolveAgent(cwd, sessionId, options.to);
@@ -61,41 +55,21 @@ async function sendMessage(cwd, config, options) {
   const message = {
     id: createId("msg"),
     sessionId,
-    from: source ? source.id : undefined,
+    threadId: options.threadId || null,
+    from: source ? source.id : null,
     fromType: source ? "agent" : "user",
     to: target.id,
+    messageKind: options.kind || "instruction",
     text,
-    createdAt: new Date().toISOString(),
     deliveryStatus: "queued",
-    kind: options.kind || "instruction",
     relatedTaskId: options.relatedTaskId || null,
+    replyToMessageId: options.replyToMessageId || null,
+    createdAt: new Date().toISOString(),
+    deliveredAt: null,
+    readAt: null,
   };
 
-  await appendJsonl(getMessagesPath(cwd, sessionId), message);
-  runStatement(
-    cwd,
-    `INSERT INTO messages (
-      id, session_id, thread_id, from_type, from_agent_id, to_agent_id, message_kind, text,
-      delivery_status, related_task_id, reply_to_message_id, created_at, delivered_at, read_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      message.id,
-      sessionId,
-      options.threadId || null,
-      message.from ? "agent" : "user",
-      source ? source.id : null,
-      target.id,
-      message.kind,
-      message.text,
-      message.deliveryStatus,
-      message.relatedTaskId,
-      options.replyToMessageId || null,
-      message.createdAt,
-      null,
-      null,
-    ]
-  );
-
+  await appendSnapshot(cwd, sessionId, "messages", message);
   const targetWorkspace = await ensureAgentWorkspace(cwd, sessionId, target.id);
   await appendJsonl(targetWorkspace.inboxPath, message);
   await appendEvent(cwd, sessionId, "message.queued", { messageId: message.id, from: message.from || "user" }, target.id);
@@ -103,7 +77,7 @@ async function sendMessage(cwd, config, options) {
     sessionId,
     agentId: target.id,
     kind: "message.queue",
-    message: `${source ? source.id : "user"} -> ${target.id}: ${message.kind}`,
+    message: `${source ? source.id : "user"} -> ${target.id}: ${message.messageKind}`,
     details: {
       messageId: message.id,
     },
@@ -156,12 +130,8 @@ async function sendMessage(cwd, config, options) {
 
     message.deliveryStatus = delivery.ok ? "delivered" : "failed";
     message.delivery = delivery;
-    await appendJsonl(getMessagesPath(cwd, sessionId), message);
-    runStatement(cwd, "UPDATE messages SET delivery_status = ?, delivered_at = ? WHERE id = ?", [
-      message.deliveryStatus,
-      new Date().toISOString(),
-      message.id,
-    ]);
+    message.deliveredAt = new Date().toISOString();
+    await appendSnapshot(cwd, sessionId, "messages", message);
     await appendJsonl(targetWorkspace.outboxPath, {
       id: createId("delivery"),
       messageId: message.id,
@@ -181,8 +151,8 @@ async function sendMessage(cwd, config, options) {
       kind: "message.delivery",
       level: delivery.ok ? "info" : "error",
       message: delivery.ok
-        ? `${target.id} received: ${message.kind}`
-        : `${target.id} failed delivery: ${message.kind}`,
+        ? `${target.id} received: ${message.messageKind}`
+        : `${target.id} failed delivery: ${message.messageKind}`,
       details: {
         messageId: message.id,
         code: delivery.code,
@@ -222,45 +192,13 @@ async function resolveMessageText(options) {
 async function listMessages(cwd, options = {}) {
   const sessionId = options.session || "default";
   await ensureWorkspace(cwd, sessionId);
-  await ensureDatabase(cwd);
-  const dbMessages = getAll(
-    cwd,
-    `SELECT
-      id,
-      session_id AS sessionId,
-      from_agent_id AS "from",
-      to_agent_id AS "to",
-      text,
-      created_at AS createdAt,
-      delivery_status AS deliveryStatus
-    FROM messages
-    WHERE session_id = ?
-    ORDER BY created_at ASC`,
-    [sessionId]
-  );
-  if (dbMessages.length) {
-    if (!options.agent) {
-      return dbMessages;
-    }
-    return dbMessages.filter((entry) => entry.to === options.agent || entry.from === options.agent);
-  }
-  const rows = await readJsonl(getMessagesPath(cwd, sessionId));
-  const messages = dedupeMessages(rows);
+  const messages = projectLatestById(await readSnapshots(cwd, sessionId, "messages"))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   if (!options.agent) {
     return messages;
   }
 
   return messages.filter((entry) => entry.to === options.agent || entry.from === options.agent);
-}
-
-function dedupeMessages(rows) {
-  const byId = new Map();
-
-  for (const row of rows) {
-    byId.set(row.id, row);
-  }
-
-  return [...byId.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 module.exports = {

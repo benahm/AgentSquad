@@ -17,7 +17,7 @@ bun run start init
 Cette commande cree :
 
 - `.agentsquad/` pour l'etat local des sessions, agents, messages et logs
-- `.agentsquad/agentsquad.db` pour SQLite
+- des fichiers `*.jsonl` par session dans `.agentsquad/sessions/<sessionId>/`
 
 ## Providers
 
