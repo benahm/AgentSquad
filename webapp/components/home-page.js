@@ -13,7 +13,7 @@ export function HomePage() {
           Endpoint disponible: <code>/api/health</code>
         </p>
         <p className={styles.description}>
-          La logique SQLite et l&apos;API metier seront implementees ensuite dans la partie backend.
+          La logique SQLite et l&apos;API metier seront implementees ensuite dans la partie serveur.
         </p>
       </section>
     </main>

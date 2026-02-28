@@ -1,5 +1,5 @@
-import { ok } from "@/backend/http/response";
-import { getHealthStatus } from "@/backend/services/health";
+import { ok } from "@/server/http/response";
+import { getHealthStatus } from "@/server/services/health";
 
 export const dynamic = "force-dynamic";
 

@@ -1,7 +1,7 @@
-Cette webapp Next.js est en cours de structuration en deux parties :
+Cette webapp Next.js suit une structure plus idiomatique :
 
-- `frontend/` pour les composants et la presentation
-- `backend/` pour les services serveur et les endpoints API
+- `components/` pour les composants et la presentation
+- `server/` pour les services serveur et les endpoints API
 
 ## Demarrage
 
@@ -22,8 +22,8 @@ Puis ouvrez [http://localhost:3000](http://localhost:3000).
 ## Structure
 
 - `app/`: routes Next.js
-- `frontend/`: vues et styles UI
-- `backend/`: config, services et utilitaires backend
+- `components/`: vues et styles UI
+- `server/`: config, services et utilitaires serveur
 
 ## Endpoint disponible
 
