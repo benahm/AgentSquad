@@ -1,0 +1,33 @@
+{
+  "name": "agentsquad-cli",
+  "version": "1.0.0",
+  "description": "CLI Agentsquad built with commander",
+  "main": "bin/agentsquad.js",
+  "bin": {
+    "agentsquad": "./bin/agentsquad.js"
+  },
+  "scripts": {
+    "start": "bun run ./bin/agentsquad.js",
+    "test": "bun run ./bin/agentsquad.js --help"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/benahm/AgentSquad.git"
+  },
+  "keywords": [
+    "agentsquad",
+    "cli",
+    "commander"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/benahm/AgentSquad/issues"
+  },
+  "homepage": "https://github.com/benahm/AgentSquad#readme",
+  "packageManager": "bun@1.3.10",
+  "dependencies": {
+    "commander": "^14.0.3"
+  }
+}
