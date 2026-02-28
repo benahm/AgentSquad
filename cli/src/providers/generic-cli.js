@@ -47,7 +47,11 @@ async function buildMessageInvocation(agent, providerConfig, message, workspace)
 
   switch (providerConfig.transport) {
     case "args":
-      base.args.push(payload);
+      if (providerConfig.promptFlag) {
+        base.args.push(providerConfig.promptFlag, payload);
+      } else {
+        base.args.push(payload);
+      }
       break;
     case "file":
       if (providerConfig.messageFileFlag) {
@@ -74,6 +78,9 @@ function buildEnv(agent, providerConfig) {
     ...(agent.env || {}),
     AGENTSQUAD_AGENT_ID: agent.id,
     AGENTSQUAD_SESSION_ID: agent.sessionId,
+    AGENTSQUAD_AGENT_ROLE: agent.role || "",
+    AGENTSQUAD_TASK_ID: agent.currentTaskId || "",
+    AGENTSQUAD_DB_PATH: (agent.env && agent.env.AGENTSQUAD_DB_PATH) || process.env.AGENTSQUAD_DB_PATH || "",
   };
 }
 

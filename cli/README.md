@@ -16,8 +16,8 @@ bun run start init
 
 Cette commande cree :
 
-- `agentsquad.config.json`
 - `.agentsquad/` pour l'etat local des sessions, agents, messages et logs
+- `.agentsquad/agentsquad.db` pour SQLite
 
 ## Providers
 
@@ -27,17 +27,35 @@ Lister les providers configures :
 agentsquad provider list
 ```
 
-Config par defaut :
+Providers integres :
 
-- `codex` en mode `oneshot` via `codex exec`
+- `vibe` pour lancer `vibe --prompt "..."`
+- `codex` pour lancer `codex exec "..."`
+- `claude` pour lancer `claude --print "..."`
 - `generic` pour des tests simples en local
+
+## Orchestration
+
+Lancer un objectif projet directement :
+
+```bash
+agentsquad "creer moi une todo app"
+```
+
+Ou choisir explicitement l'agent principal :
+
+```bash
+agentsquad vibe "create a note app"
+agentsquad codex "create a note app"
+agentsquad claude "create a note app"
+```
 
 ## Agents
 
 Creer un agent logique :
 
 ```bash
-agentsquad agent run --provider codex --name planner
+agentsquad agent run --role developer --goal "creer une todo app" --task "implementer la page principale"
 ```
 
 Lister les agents :
@@ -49,7 +67,19 @@ agentsquad agent list
 Voir un agent :
 
 ```bash
-agentsquad agent show agent-12345678
+agentsquad agent show agent-david-developer
+```
+
+Recuperer la tache courante d'un agent :
+
+```bash
+agentsquad task get --agent agent-david-developer
+```
+
+Assigner une tache :
+
+```bash
+agentsquad task assign --agent agent-max-reviewer --goal "creer une todo app" --task "relire la premiere version"
 ```
 
 ## Messages

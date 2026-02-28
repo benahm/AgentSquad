@@ -17,7 +17,7 @@ function registerProviderCommands(program) {
         providers,
       }, (payload) => {
         if (!payload.providers.length) {
-          return "No providers configured.";
+          return "No built-in providers available.";
         }
 
         return payload.providers

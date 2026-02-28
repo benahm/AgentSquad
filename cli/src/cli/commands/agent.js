@@ -8,7 +8,10 @@ function registerAgentCommands(program) {
   agent
     .command("run")
     .description("Run a managed agent")
-    .requiredOption("--provider <id>", "Provider id from agentsquad.config.json")
+    .option("--provider <id>", "Provider id")
+    .option("--role <role>", "Agent role", "worker")
+    .option("--goal <goal>", "Goal assigned to the agent")
+    .option("--task <task>", "Current task to assign")
     .option("--name <name>", "Human-friendly agent name")
     .option("--session <id>", "Session id", "default")
     .option("--workdir <path>", "Working directory", process.cwd())
@@ -17,11 +20,14 @@ function registerAgentCommands(program) {
     .option("--json", "Return JSON output", false)
     .action(async (options) => {
       const config = await loadConfig(process.cwd());
-      const agentRecord = await spawnAgent(process.cwd(), config, options);
+      const agentRecord = await spawnAgent(process.cwd(), config, {
+        ...options,
+        provider: options.provider || config.orchestrator.provider || "vibe",
+      });
       printOutput(options, {
         status: "ok",
         agent: agentRecord,
-      }, (payload) => `Created ${payload.agent.id} (${payload.agent.providerId})`);
+      }, (payload) => `Created ${payload.agent.id} (${payload.agent.providerId}, ${payload.agent.role})`);
     });
 
   agent
@@ -40,7 +46,7 @@ function registerAgentCommands(program) {
         }
 
         return payload.agents
-          .map((entry) => `${entry.id} [${entry.status}] ${entry.providerId}${entry.name ? ` ${entry.name}` : ""}`)
+          .map((entry) => `${entry.id} [${entry.status}] ${entry.providerId} ${entry.role}${entry.name ? ` ${entry.name}` : ""}`)
           .join("\n");
       });
     });

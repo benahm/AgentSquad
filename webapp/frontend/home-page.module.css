@@ -7,7 +7,7 @@
 }
 
 .card {
-  width: min(100%, 42rem);
+  width: min(100%, 48rem);
   padding: 3rem;
   border-radius: 1.5rem;
   background: rgba(255, 255, 255, 0.82);
@@ -36,6 +36,10 @@
   font-size: 1.1rem;
   line-height: 1.7;
   color: #374151;
+}
+
+.description code {
+  font-family: var(--font-geist-mono);
 }
 
 @media (max-width: 640px) {

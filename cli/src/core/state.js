@@ -23,8 +23,8 @@ function getAgentRoot(cwd, sessionId, agentId) {
   return path.join(getAgentsRoot(cwd, sessionId), agentId);
 }
 
-function getConfigPath(cwd) {
-  return path.join(cwd, "agentsquad.config.json");
+function getDatabasePath(cwd) {
+  return path.join(getWorkspaceRoot(cwd), "agentsquad.db");
 }
 
 async function ensureWorkspace(cwd, sessionId = "default") {
@@ -81,12 +81,12 @@ module.exports = {
   WORKSPACE_DIR,
   ensureWorkspace,
   ensureAgentWorkspace,
+  getDatabasePath,
   getWorkspaceRoot,
   getSessionRoot,
   getSessionsRoot,
   getAgentsRoot,
   getAgentRoot,
-  getConfigPath,
   readJsonFile,
   writeJsonFile,
   pathExists,

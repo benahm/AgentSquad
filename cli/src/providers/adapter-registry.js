@@ -5,6 +5,9 @@ const { createCodexAdapter } = require("./codex");
 
 const PROVIDERS = {
   codex: createCodexAdapter(),
+  vibe: createGenericCliAdapter("vibe"),
+  claude: createGenericCliAdapter("claude"),
+  "mistral-vibe": createGenericCliAdapter("mistral-vibe"),
   generic: createGenericCliAdapter("generic"),
 };
 

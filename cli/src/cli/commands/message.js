@@ -13,6 +13,7 @@ function registerMessageCommands(program) {
     .option("--session <id>", "Session id", "default")
     .option("--text <text>", "Inline message text")
     .option("--file <path>", "Read message text from a file")
+    .option("--related-task-id <id>", "Related task id")
     .option("--json", "Return JSON output", false)
     .action(async (options) => {
       const config = await loadConfig(process.cwd());

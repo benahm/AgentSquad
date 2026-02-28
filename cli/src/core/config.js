@@ -1,16 +1,49 @@
-const path = require("node:path");
-const { pathExists, readJsonFile, writeJsonFile } = require("./state");
 const { AgentsquadError } = require("./errors");
 
 function defaultConfig() {
   return {
     defaultSession: "default",
+    orchestrator: {
+      provider: "vibe",
+      managerRoleName: "planner",
+      autoNames: true,
+    },
     providers: {
+      vibe: {
+        command: "vibe",
+        args: [],
+        mode: "oneshot",
+        transport: "args",
+        promptFlag: "--prompt",
+        messageFormat: "plain",
+        workingDirectoryMode: "inherit",
+        env: {},
+      },
+      "mistral-vibe": {
+        command: "vibe",
+        args: [],
+        mode: "oneshot",
+        transport: "args",
+        promptFlag: "--prompt",
+        messageFormat: "plain",
+        workingDirectoryMode: "inherit",
+        env: {},
+      },
       codex: {
         command: "codex",
         args: ["exec"],
         mode: "oneshot",
         transport: "args",
+        messageFormat: "plain",
+        workingDirectoryMode: "inherit",
+        env: {},
+      },
+      claude: {
+        command: "claude",
+        args: [],
+        mode: "oneshot",
+        transport: "args",
+        promptFlag: "--print",
         messageFormat: "plain",
         workingDirectoryMode: "inherit",
         env: {},
@@ -28,27 +61,13 @@ function defaultConfig() {
   };
 }
 
-function getConfigPath(cwd) {
-  return path.join(cwd, "agentsquad.config.json");
-}
-
-async function loadConfig(cwd) {
-  const configPath = getConfigPath(cwd);
-  const exists = await pathExists(configPath);
-  if (!exists) {
-    throw new AgentsquadError(
-      "CONFIG_NOT_FOUND",
-      `No agentsquad.config.json found in ${cwd}. Run "agentsquad init" first.`,
-      1
-    );
-  }
-
-  const config = await readJsonFile(configPath);
-  validateConfig(config, configPath);
+async function loadConfig() {
+  const config = defaultConfig();
+  validateConfig(config, "built-in config");
   return config;
 }
 
-function validateConfig(config, configPath = "agentsquad.config.json") {
+function validateConfig(config, configPath = "built-in config") {
   if (!config || typeof config !== "object") {
     throw new AgentsquadError("CONFIG_INVALID", `${configPath} must contain an object.`);
   }
@@ -56,17 +75,18 @@ function validateConfig(config, configPath = "agentsquad.config.json") {
   if (!config.providers || typeof config.providers !== "object") {
     throw new AgentsquadError("CONFIG_INVALID", `${configPath} must define a "providers" object.`);
   }
-}
 
-async function saveConfig(cwd, config) {
-  validateConfig(config);
-  await writeJsonFile(getConfigPath(cwd), config);
+  if (!config.orchestrator || typeof config.orchestrator !== "object") {
+    config.orchestrator = {
+      provider: "vibe",
+      managerRoleName: "planner",
+      autoNames: true,
+    };
+  }
 }
 
 module.exports = {
   defaultConfig,
-  getConfigPath,
   loadConfig,
-  saveConfig,
   validateConfig,
 };
