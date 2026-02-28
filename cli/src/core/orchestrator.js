@@ -24,6 +24,31 @@ function buildManagerPrompt(goal, provider) {
   ].join("\n");
 }
 
+function getExistingManager(cwd, sessionId) {
+  return getOne(
+    cwd,
+    `SELECT
+      a.id,
+      a.name,
+      a.role,
+      a.kind,
+      a.provider_id AS providerId,
+      a.profile,
+      a.session_id AS sessionId,
+      a.goal,
+      a.mode,
+      a.workdir,
+      a.created_at AS createdAt,
+      a.updated_at AS updatedAt,
+      a.status,
+      a.current_task_id AS currentTaskId
+    FROM sessions s
+    JOIN agents a ON a.id = s.manager_agent_id
+    WHERE s.id = ? AND a.archived_at IS NULL`,
+    [sessionId]
+  );
+}
+
 async function ensureSessionRecord(cwd, config, session) {
   await ensureDatabase(cwd);
   const existing = getOne(cwd, "SELECT id FROM sessions WHERE id = ?", [session.id]);
@@ -71,6 +96,33 @@ async function executeObjective(cwd, config, options = {}) {
     createdAt: now,
     updatedAt: now,
   });
+
+  const existingManager = getExistingManager(cwd, sessionId);
+  if (existingManager) {
+    runStatement(cwd, "UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?", [
+      "active",
+      new Date().toISOString(),
+      sessionId,
+    ]);
+
+    await appendActivityLog(cwd, {
+      sessionId,
+      agentId: existingManager.id,
+      kind: "session.reuse_manager",
+      message: `${provider}-planner reused existing manager ${existingManager.id}`,
+      details: { provider, goal, managerAgentId: existingManager.id },
+      reporter: options.reporter,
+    });
+
+    return {
+      sessionId,
+      goal,
+      manager: existingManager,
+      message: null,
+      logs: await listActivityLogs(cwd, { session: sessionId }),
+      summary: `Reused ${existingManager.id} for objective: ${goal}`,
+    };
+  }
 
   await appendActivityLog(cwd, {
     sessionId,

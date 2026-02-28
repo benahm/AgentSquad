@@ -156,6 +156,43 @@ test("executeObjective creates a planner agent and initial message", async () =>
   assert.match(logs[0].message, /planner started: planning/i);
 });
 
+test("executeObjective reuses the existing planner in the same session", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "agentsquad-"));
+  const config = defaultConfig();
+  const echo = await createEchoStdinCommand(cwd, "echo-reuse-planner.js");
+  config.providers.vibe = {
+    command: echo.command,
+    args: echo.args,
+    mode: "oneshot",
+    transport: "stdin",
+    messageFormat: "plain",
+    workingDirectoryMode: "inherit",
+    env: {},
+  };
+
+  const first = await executeObjective(cwd, config, {
+    goal: "creer moi une todo app",
+    session: "default",
+    provider: "vibe",
+    workdir: cwd,
+  });
+  const second = await executeObjective(cwd, config, {
+    goal: "creer moi une todo app",
+    session: "default",
+    provider: "vibe",
+    workdir: cwd,
+  });
+
+  assert.equal(second.manager.id, first.manager.id);
+  assert.equal(second.message, null);
+
+  const agents = await showAgent(cwd, "default", first.manager.id);
+  assert.equal(agents.id, first.manager.id);
+
+  const messages = await listMessages(cwd, { session: "default" });
+  assert.equal(messages.length, 1);
+});
+
 test("vibe provider sends the prompt through --prompt", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "agentsquad-"));
   const scriptPath = path.join(cwd, "echo-args.js");
