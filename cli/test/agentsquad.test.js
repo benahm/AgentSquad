@@ -4,7 +4,7 @@ const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const { defaultConfig } = require("../src/core/config");
-const { pathExists } = require("../src/core/state");
+const { pathExists, getWorkspaceRoot } = require("../src/core/state");
 const { spawnAgent, showAgent } = require("../src/core/agents");
 const { sendMessage, listMessages } = require("../src/core/messages");
 const { getTaskContext, updateTaskStatus, assignTask, notifyTaskDone } = require("../src/core/tasks");
@@ -578,4 +578,32 @@ test("detectDirectGoal ignores provider shortcut commands", () => {
   assert.equal(detectDirectGoal(["node", "agentsquad", "codex", "create a note app"]), null);
   assert.equal(detectDirectGoal(["node", "agentsquad", "claude", "create a note app"]), null);
   assert.equal(detectDirectGoal(["node", "agentsquad", "create a note app"]), "create a note app");
+});
+
+test("workspace root resolution honors propagated agent environment", () => {
+  const repoRoot = path.join("C:", "workspace", "repo");
+  const nestedCwd = path.join(repoRoot, "test");
+  const workspaceRoot = path.join(repoRoot, ".agentsquad");
+  const dbPath = path.join(workspaceRoot, "agentsquad.db");
+  const previousWorkspaceRoot = process.env.AGENTSQUAD_WORKSPACE_ROOT;
+  const previousDbPath = process.env.AGENTSQUAD_DB_PATH;
+
+  process.env.AGENTSQUAD_WORKSPACE_ROOT = workspaceRoot;
+  process.env.AGENTSQUAD_DB_PATH = dbPath;
+
+  try {
+    assert.equal(getWorkspaceRoot(nestedCwd), workspaceRoot);
+  } finally {
+    if (previousWorkspaceRoot === undefined) {
+      delete process.env.AGENTSQUAD_WORKSPACE_ROOT;
+    } else {
+      process.env.AGENTSQUAD_WORKSPACE_ROOT = previousWorkspaceRoot;
+    }
+
+    if (previousDbPath === undefined) {
+      delete process.env.AGENTSQUAD_DB_PATH;
+    } else {
+      process.env.AGENTSQUAD_DB_PATH = previousDbPath;
+    }
+  }
 });

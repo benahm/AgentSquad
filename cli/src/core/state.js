@@ -3,7 +3,34 @@ const path = require("node:path");
 
 const WORKSPACE_DIR = ".agentsquad";
 
+function isWindowsAbsolutePath(value) {
+  return /^[a-zA-Z]:[\\/]/.test(value || "");
+}
+
+function resolveExternalPath(value) {
+  if (!value) {
+    return value;
+  }
+
+  if (isWindowsAbsolutePath(value) || path.isAbsolute(value)) {
+    return value;
+  }
+
+  return path.resolve(value);
+}
+
 function getWorkspaceRoot(cwd) {
+  const explicitRoot = process.env.AGENTSQUAD_WORKSPACE_ROOT;
+  if (explicitRoot) {
+    return resolveExternalPath(explicitRoot);
+  }
+
+  const explicitDbPath = process.env.AGENTSQUAD_DB_PATH;
+  if (explicitDbPath) {
+    const resolvedDbPath = resolveExternalPath(explicitDbPath);
+    return isWindowsAbsolutePath(resolvedDbPath) ? path.win32.dirname(resolvedDbPath) : path.dirname(resolvedDbPath);
+  }
+
   return path.join(cwd, WORKSPACE_DIR);
 }
 
