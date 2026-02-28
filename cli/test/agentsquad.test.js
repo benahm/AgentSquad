@@ -74,6 +74,34 @@ test("sendMessage persists and delivers a oneshot message", async () => {
   assert.match(stdout, /hello team/);
 });
 
+test("spawnAgent can auto-start a oneshot worker when requested", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "agentsquad-"));
+  const config = defaultConfig();
+  const echo = await createEchoStdinCommand(cwd, "echo-autostart.js");
+  config.providers.generic.command = echo.command;
+  config.providers.generic.args = echo.args;
+  config.providers.generic.transport = "stdin";
+
+  const agent = await spawnAgent(cwd, config, {
+    provider: "generic",
+    session: "default",
+    workdir: cwd,
+    role: "developer",
+    goal: "Build the feature",
+    task: "Create the first draft",
+    autoStart: true,
+  });
+
+  const messages = await listMessages(cwd, { session: "default" });
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].to, agent.id);
+  assert.match(messages[0].text, /agentsquad task get --wait/);
+
+  const stdoutPath = path.join(cwd, ".agentsquad", "sessions", "default", "agents", agent.id, "stdout.log");
+  const stdout = await fs.readFile(stdoutPath, "utf8");
+  assert.match(stdout, /Start working on your assigned task now/i);
+});
+
 test("task get resolves the current task from agent env", async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "agentsquad-"));
   const config = defaultConfig();

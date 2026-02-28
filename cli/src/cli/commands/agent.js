@@ -22,6 +22,7 @@ function registerAgentCommands(program) {
       const config = await loadConfig(process.cwd());
       const agentRecord = await spawnAgent(process.cwd(), config, {
         ...options,
+        autoStart: true,
         provider: options.provider || config.orchestrator.provider || "vibe",
       });
       printOutput(options, {

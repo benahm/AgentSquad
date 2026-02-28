@@ -307,6 +307,17 @@ async function spawnAgent(cwd, config, options) {
     },
   });
 
+  if (shouldAutoStartAgent(agent, options)) {
+    const { sendMessage } = require("./messages");
+    await sendMessage(cwd, config, {
+      session: sessionId,
+      to: agent.id,
+      text: buildAgentKickoffPrompt(agent),
+      kind: "instruction",
+      reporter: options.reporter,
+    });
+  }
+
   return agent;
 }
 
@@ -417,6 +428,26 @@ function inferTaskType(role) {
     return "implementation";
   }
   return "other";
+}
+
+function shouldAutoStartAgent(agent, options) {
+  return agent.mode === "oneshot"
+    && options.autoStart === true
+    && Boolean(agent.currentTaskId)
+    && agent.kind !== "manager";
+}
+
+function buildAgentKickoffPrompt(agent) {
+  return [
+    `You are ${agent.role || "a worker"} for this objective: ${agent.goal}.`,
+    "Start working on your assigned task now.",
+    "First, run `agentsquad task get --wait` to load the active task details and dependency state.",
+    "If the task is ready, complete the requested work in the project workspace and keep outputs concrete.",
+    "If you are implementing something, create or edit the necessary files directly.",
+    "When your implementation task is ready for review, run `agentsquad task notify-done --task <task-id>`.",
+    "If you are validating or reviewing work, run `agentsquad task update-status --status done` when it passes.",
+    "If validation fails, run `agentsquad task update-status --status blocked --note \"...\"` with actionable feedback.",
+  ].join("\n");
 }
 
 module.exports = {
