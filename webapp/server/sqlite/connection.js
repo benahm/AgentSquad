@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import Database from "better-sqlite3";
+import { Database } from "bun:sqlite";
 import { ApiError } from "@/server/http/errors";
 
 const SQLITE_BUSY_TIMEOUT_MS = 30_000;
@@ -13,6 +13,10 @@ function normalizeInputPath(inputPath) {
   const windowsDriveMatch = trimmed.match(/^([a-zA-Z]):[\\/](.*)$/);
 
   if (!windowsDriveMatch) {
+    return path.resolve(trimmed);
+  }
+
+  if (process.platform === "win32") {
     return path.resolve(trimmed);
   }
 
@@ -89,10 +93,10 @@ export async function withReadOnlyDatabase(dbPath, callback) {
   try {
     const readablePath = await syncReadableMirror(dbPath);
     db = new Database(readablePath, {
-      fileMustExist: true,
+      readonly: true,
     });
-    db.pragma("query_only = 1");
-    db.pragma(`busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+    db.prepare("PRAGMA query_only = 1").run();
+    db.prepare(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`).run();
     return callback(db);
   } catch (error) {
     if (error instanceof ApiError) {
