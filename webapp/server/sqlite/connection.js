@@ -49,23 +49,17 @@ export async function normalizeAndValidateDatabasePath(inputPath) {
   return dbPath;
 }
 
-async function removeIfExists(filePath) {
-  try {
-    await fs.unlink(filePath);
-  } catch (error) {
-    if (error?.code !== "ENOENT") {
-      throw error;
-    }
-  }
-}
-
 async function syncReadableMirror(dbPath) {
   const mirrorRoot = path.join(os.tmpdir(), "agentsquad-webapp");
   const mirrorId = crypto.createHash("sha1").update(dbPath).digest("hex");
-  const mirrorDir = path.join(mirrorRoot, mirrorId);
+
+  await fs.mkdir(mirrorRoot, { recursive: true });
+
+  // Use a unique temp directory per invocation to avoid EBUSY when another
+  // connection still has an older mirror open on Windows.
+  const mirrorDir = await fs.mkdtemp(path.join(mirrorRoot, `${mirrorId}-`));
   const mirrorPath = path.join(mirrorDir, "agentsquad.db");
 
-  await fs.mkdir(mirrorDir, { recursive: true });
   await fs.copyFile(dbPath, mirrorPath);
 
   for (const suffix of ["-wal", "-shm"]) {
@@ -76,7 +70,6 @@ async function syncReadableMirror(dbPath) {
       await fs.copyFile(sourceSidecar, mirrorSidecar);
     } catch (error) {
       if (error?.code === "ENOENT") {
-        await removeIfExists(mirrorSidecar);
         continue;
       }
 
@@ -84,15 +77,18 @@ async function syncReadableMirror(dbPath) {
     }
   }
 
-  return mirrorPath;
+  return { mirrorPath, mirrorDir };
 }
 
 export async function withReadOnlyDatabase(dbPath, callback) {
   let db;
+  let mirrorDir;
 
   try {
-    const readablePath = await syncReadableMirror(dbPath);
-    db = new Database(readablePath, {
+    const { mirrorPath, mirrorDir: createdMirrorDir } = await syncReadableMirror(dbPath);
+    mirrorDir = createdMirrorDir;
+
+    db = new Database(mirrorPath, {
       readonly: true,
     });
     db.prepare("PRAGMA query_only = 1").run();
@@ -115,6 +111,14 @@ export async function withReadOnlyDatabase(dbPath, callback) {
       db?.close();
     } catch {
       // Ignore close failures on read-only connections.
+    }
+
+    if (mirrorDir) {
+      try {
+        await fs.rm(mirrorDir, { recursive: true, force: true });
+      } catch {
+        // Best-effort cleanup; ignore failures.
+      }
     }
   }
 }
