@@ -16,6 +16,38 @@ function getMessagesPath(cwd, sessionId) {
   return path.join(getSessionRoot(cwd, sessionId), "messages.jsonl");
 }
 
+function formatProviderStreamLine(agent, providerId, stream, line) {
+  const normalized = String(line || "").trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const label = providerId === "codex" && stream === "stderr" ? "log" : stream;
+  return `${agent.id} ${label}: ${normalized}`;
+}
+
+function summarizeDeliveryFailure(providerId, lines) {
+  const normalized = lines.map((line) => String(line || "").trim()).filter(Boolean);
+  if (!normalized.length) {
+    return null;
+  }
+
+  if (providerId === "codex") {
+    if (normalized.some((line) => line.includes("&&") && /séparateur|separator/i.test(line))) {
+      return "Likely cause: Codex ran a PowerShell command with `&&`, which Windows PowerShell does not support. Use `;` instead.";
+    }
+    if (normalized.some((line) => /ParserError|InvalidEndOfLine/.test(line))) {
+      return "Likely cause: the generated PowerShell command has invalid shell syntax for Windows PowerShell.";
+    }
+    const exitedLine = normalized.find((line) => /\bexited\s+[1-9]/i.test(line));
+    if (exitedLine) {
+      return `Provider command failed: ${exitedLine}`;
+    }
+  }
+
+  return normalized.find((line) => /error|failed|exception|exited\s+[1-9]/i.test(line)) || normalized[0];
+}
+
 async function sendMessage(cwd, config, options) {
   const sessionId = options.session || config.defaultSession || "default";
   await ensureWorkspace(cwd, sessionId);
@@ -82,29 +114,46 @@ async function sendMessage(cwd, config, options) {
   const adapter = resolveProvider(target.providerId);
 
   if (providerConfig.mode === "oneshot") {
+    const streamedStdoutLines = [];
+    const streamedStderrLines = [];
     const delivery = await adapter.deliverMessage(target, providerConfig, {
       ...message,
       reporter: options.reporter,
       onStdout: async (line) => {
-        await appendActivityLog(cwd, {
-          sessionId,
-          agentId: target.id,
-          kind: "agent.stdout",
-          message: `${target.id} output: ${line}`,
-          reporter: options.reporter,
-        });
+        streamedStdoutLines.push(line);
+        const formatted = formatProviderStreamLine(target, target.providerId, "output", line);
+        if (formatted && typeof options.reporter === "function") {
+          options.reporter(formatted);
+        }
       },
       onStderr: async (line) => {
-        await appendActivityLog(cwd, {
-          sessionId,
-          agentId: target.id,
-          kind: "agent.stderr",
-          level: "warning",
-          message: `${target.id} error: ${line}`,
-          reporter: options.reporter,
-        });
+        streamedStderrLines.push(line);
+        const formatted = formatProviderStreamLine(target, target.providerId, "stderr", line);
+        if (formatted && typeof options.reporter === "function") {
+          options.reporter(formatted);
+        }
       },
     }, targetWorkspace);
+
+    for (const line of streamedStdoutLines) {
+      await appendActivityLog(cwd, {
+        sessionId,
+        agentId: target.id,
+        kind: "agent.stdout",
+        message: `${target.id} output: ${line}`,
+      });
+    }
+
+    for (const line of streamedStderrLines) {
+      await appendActivityLog(cwd, {
+        sessionId,
+        agentId: target.id,
+        kind: "agent.stderr",
+        level: "warning",
+        message: `${target.id} error: ${line}`,
+      });
+    }
+
     message.deliveryStatus = delivery.ok ? "delivered" : "failed";
     message.delivery = delivery;
     await appendJsonl(getMessagesPath(cwd, sessionId), message);
@@ -141,6 +190,13 @@ async function sendMessage(cwd, config, options) {
       },
       reporter: options.reporter,
     });
+
+    if (!delivery.ok && typeof options.reporter === "function") {
+      const failureSummary = summarizeDeliveryFailure(target.providerId, streamedStderrLines);
+      if (failureSummary) {
+        options.reporter(`${target.id} failure reason: ${failureSummary}`);
+      }
+    }
   } else {
     await appendEvent(cwd, sessionId, "message.deferred", { messageId: message.id }, target.id);
   }

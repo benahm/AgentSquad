@@ -42,6 +42,17 @@ async function runOneshotProcess(command, args, options) {
 
     let stdoutBuffer = "";
     let stderrBuffer = "";
+    let pendingCallbacks = Promise.resolve();
+
+    function enqueueCallback(callback, line) {
+      pendingCallbacks = pendingCallbacks
+        .then(async () => {
+          await callback(line);
+        })
+        .catch(() => {
+          // Ignore callback failures here; the caller surfaces its own delivery errors.
+        });
+    }
 
     child.stdout.on("data", (chunk) => {
       const text = chunk.toString("utf8");
@@ -52,7 +63,7 @@ async function runOneshotProcess(command, args, options) {
         stdoutBuffer = lines.pop() || "";
         for (const line of lines) {
           if (line.trim()) {
-            options.onStdout(line);
+            enqueueCallback(options.onStdout, line);
           }
         }
       }
@@ -67,7 +78,7 @@ async function runOneshotProcess(command, args, options) {
         stderrBuffer = lines.pop() || "";
         for (const line of lines) {
           if (line.trim()) {
-            options.onStderr(line);
+            enqueueCallback(options.onStderr, line);
           }
         }
       }
@@ -78,13 +89,14 @@ async function runOneshotProcess(command, args, options) {
     }
     child.stdin.end();
 
-    child.on("close", (code, signal) => {
+    child.on("close", async (code, signal) => {
       if (options.onStdout && stdoutBuffer.trim()) {
-        options.onStdout(stdoutBuffer.trim());
+        enqueueCallback(options.onStdout, stdoutBuffer.trim());
       }
       if (options.onStderr && stderrBuffer.trim()) {
-        options.onStderr(stderrBuffer.trim());
+        enqueueCallback(options.onStderr, stderrBuffer.trim());
       }
+      await pendingCallbacks;
       stdoutStream.end();
       stderrStream.end();
       resolve({

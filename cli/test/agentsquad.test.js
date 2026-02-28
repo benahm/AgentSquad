@@ -9,6 +9,7 @@ const { spawnAgent, showAgent } = require("../src/core/agents");
 const { sendMessage, listMessages } = require("../src/core/messages");
 const { getTaskContext, updateTaskStatus } = require("../src/core/tasks");
 const { executeObjective } = require("../src/core/orchestrator");
+const { runOneshotProcess } = require("../src/core/process-manager");
 const { detectDirectGoal } = require("../src/cli");
 const { listActivityLogs } = require("../src/core/activity-logs");
 
@@ -231,6 +232,131 @@ test("vibe provider sends the prompt through --prompt", async () => {
   assert.equal(captured[0], "--prompt");
   assert.match(captured[1], /create a note app/i);
   assert.match(captured[1], /agentsquad task get/i);
+});
+
+test("runOneshotProcess waits for async stderr handlers", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "agentsquad-"));
+  const scriptPath = path.join(cwd, "stderr-burst.js");
+  const seen = [];
+
+  await fs.writeFile(
+    scriptPath,
+    [
+      "console.error('first');",
+      "console.error('second');",
+      "console.error('third');",
+    ].join("\n"),
+    "utf8"
+  );
+
+  const result = await runOneshotProcess(process.execPath, [scriptPath], {
+    cwd,
+    env: process.env,
+    stdoutPath: path.join(cwd, "stdout.log"),
+    stderrPath: path.join(cwd, "stderr.log"),
+    onStderr: async (line) => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      seen.push(line);
+    },
+  });
+
+  assert.equal(result.code, 0);
+  assert.deepEqual(seen, ["first", "second", "third"]);
+});
+
+test("sendMessage flushes streamed stderr logs after delivery", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "agentsquad-"));
+  const scriptPath = path.join(cwd, "stderr-provider.js");
+  const config = defaultConfig();
+
+  await fs.writeFile(
+    scriptPath,
+    [
+      "console.error('alpha');",
+      "console.error('beta');",
+    ].join("\n"),
+    "utf8"
+  );
+
+  config.providers.generic = {
+    command: process.execPath,
+    args: [scriptPath],
+    mode: "oneshot",
+    transport: "args",
+    messageFormat: "plain",
+    workingDirectoryMode: "inherit",
+    env: {},
+  };
+
+  const agent = await spawnAgent(cwd, config, {
+    provider: "generic",
+    session: "default",
+    workdir: cwd,
+    role: "developer",
+    goal: "Build the feature",
+    task: "Create the first draft",
+  });
+
+  await sendMessage(cwd, config, {
+    session: "default",
+    to: agent.id,
+    text: "hello team",
+  });
+
+  const logs = await listActivityLogs(cwd, { session: "default" });
+  const stderrLogs = logs.filter((entry) => entry.kind === "agent.stderr");
+  assert.equal(stderrLogs.length, 2);
+  assert.match(stderrLogs[0].message, /alpha/);
+  assert.match(stderrLogs[1].message, /beta/);
+});
+
+test("sendMessage reports a clearer Codex failure reason", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "agentsquad-"));
+  const scriptPath = path.join(cwd, "codex-failure.js");
+  const config = defaultConfig();
+  const reported = [];
+
+  await fs.writeFile(
+    scriptPath,
+    [
+      "console.error('ParserError');",
+      "console.error('Le jeton « && » n’est pas un séparateur d\\'instruction valide.');",
+      "process.exit(1);",
+    ].join("\n"),
+    "utf8"
+  );
+
+  config.providers.codex = {
+    command: process.execPath,
+    args: [scriptPath],
+    mode: "oneshot",
+    transport: "args",
+    messageFormat: "plain",
+    workingDirectoryMode: "inherit",
+    env: {},
+  };
+
+  const agent = await spawnAgent(cwd, config, {
+    provider: "codex",
+    session: "default",
+    workdir: cwd,
+    role: "planner",
+    goal: "Plan the project",
+    task: "Create a plan",
+    name: "manager",
+    kind: "manager",
+  });
+
+  const result = await sendMessage(cwd, config, {
+    session: "default",
+    to: agent.id,
+    text: "hello team",
+    reporter: (line) => reported.push(line),
+  });
+
+  assert.equal(result.message.deliveryStatus, "failed");
+  assert.ok(reported.some((line) => line.includes(`${agent.id} log: ParserError`)));
+  assert.ok(reported.some((line) => line.includes("failure reason: Likely cause: Codex ran a PowerShell command with `&&`")));
 });
 
 test("detectDirectGoal ignores provider shortcut commands", () => {
